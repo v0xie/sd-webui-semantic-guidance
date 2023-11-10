@@ -11,7 +11,10 @@ from modules import script_callbacks, rng, prompt_parser
 from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, AfterCFGCallbackParams
 from modules.prompt_parser import get_multicond_learned_conditioning, get_multicond_prompt_list, get_learned_conditioning_prompt_schedules, get_learned_conditioning, reconstruct_cond_batch, reconstruct_multicond_batch
 from modules.processing import StableDiffusionProcessing
-from modules.shared import sd_model
+#from modules.shared import sd_model, opts
+from modules.sd_samplers_cfg_denoiser import pad_cond, subscript_cond
+from modules.sd_models import get_empty_cond
+from modules import shared
 
 import torch
 
@@ -167,34 +170,44 @@ class SegaExtensionScript(scripts.Script):
                 # Semantic Guidance
                 # Calculate edit direction
                 for key, cond in tensor.items():
-                        if key not in edit_dir_dict.keys():
-                                edit_dir_dict[key] = torch.zeros_like(text_cond[key], dtype=cond.dtype, device=cond.device)
 
-                        # warmup period
-                        #if sampling_step < warmup_period:
-                        #        break
+                        #self.padded_cond_uncond = False
+                        if shared.opts.pad_cond_uncond and cond.shape[1] != text_uncond[key].shape[1] and cond.dim() == text_uncond[key].dim():
+                                empty = shared.sd_model.cond_stage_model_empty_prompt
+                                num_repeats = (cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
+
+                                if num_repeats < 0:
+                                        cond = pad_cond(cond, -num_repeats, empty)
+#                                        self.padded_cond_uncond = True
+                                #elif num_repeats > 0:
+                                #        uncond = pad_cond(uncond, num_repeats, empty)
+#                                        self.padded_cond_uncond = True
+                        if key not in edit_dir_dict.keys():
+                                edit_dir_dict[key] = torch.zeros_like(cond, dtype=cond.dtype, device=cond.device)
 
                         # filter out values in-between tails
                         cond_mean, cond_std = torch.mean(cond).item(), torch.std(cond).item()
-                        edit_dir = cond - text_uncond[key]
+
+                        # this slice is probably wrong
+                        # slice out the unconditioned text
+                        if cond.shape != text_uncond[key].shape:
+                                edit_dir = cond - text_uncond[key][:, :cond.shape[1], :]
+                        else:
+                                edit_dir = cond - text_uncond[key]
 
                         # z-scores for tails
-                        #lower_z = stats.norm.ppf(tail_percentage_threshold)
                         upper_z = stats.norm.ppf(1.0 - tail_percentage_threshold)
 
                         # numerical thresholds
-                        #lower_threshold = cond_mean + (lower_z * cond_std)
                         upper_threshold = cond_mean + (upper_z * cond_std)
-                        #lower_threshold *= edit_guidance_scale
 
                         # zero out values in-between tails
+                        # elementwise multiplication between scale tensor and edit direction
                         zero_tensor = torch.zeros_like(cond, dtype=cond.dtype, device=cond.device)
                         scale_tensor = torch.ones_like(cond, dtype=cond.dtype, device=cond.device) * edit_guidance_scale
                         edit_dir_abs = edit_dir.abs()
                         scale_tensor = torch.where((edit_dir_abs > upper_threshold), scale_tensor, zero_tensor)
 
-                        # elementwise multiplication between scale tensor and edit direction
-                        #jguidance_strength = 0.0 if sampling_step < warmup_period else conds_list[0][0][1] # FIXME: Use appropriate guidance strength
                         guidance_strength = 0.0 if sampling_step < warmup_period else 1.0 # FIXME: Use appropriate guidance strength
                         edit_dir = torch.mul(scale_tensor, edit_dir)
                         edit_dir_dict[key] = edit_dir_dict[key] + guidance_strength * edit_dir
@@ -216,7 +229,15 @@ class SegaExtensionScript(scripts.Script):
                         v_t_1 = momentum_beta * ((1 - momentum_beta) * v_t) * dir
 
                         if sampling_step >= warmup_period:
-                                text_cond[key] = text_cond[key] + dir
+                                # FIXME: Hacky way to handle padding
+                                if text_cond[key].dim() == 3 and text_cond[key].shape[1] != dir.shape[1]:
+                                        if text_cond[key].shape[1] > dir.shape[1]:
+                                                text_cond[key][:, :dir.shape[1], :] += dir
+                                        else:
+                                                text_cond[key] += dir[:, :text_cond[key].shape[1], :]
+                                else:
+                                        text_cond[key] = text_cond[key] + dir
+                                        #text_cond[key] = torch.add(text_cond[key], dir)
 
                         sega_params.v[key] = v_t_1
 
