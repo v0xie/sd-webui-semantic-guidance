@@ -61,7 +61,7 @@ class SegaExtensionScript(scripts.Script):
         def ui(self, is_img2img):
                 with gr.Accordion('Semantic Guidance', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='sega_active')
-                        neg_text = gr.Textbox(lines=1, label="Prompt", elem_id = 'sega_neg_text', info="Prompt goes here'")
+                        prompt = gr.Textbox(lines=1, label="Prompt", elem_id = 'sega_prompt', info="Prompt goes here'")
                         with gr.Row():
                                 warmup = gr.Slider(value = 0.2, minimum = 0.0, maximum = 1.0, step = 0.01, label="Warmup Period", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 5")
                                 edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 10.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
@@ -69,23 +69,41 @@ class SegaExtensionScript(scripts.Script):
                                 momentum_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 1.0, step = 0.01, label="Momentum Scale", elem_id = 'sega_momentum_scale', info="Scale of momentum, default 1.0")
                                 momentum_beta = gr.Slider(value = 0.5, minimum = 0.0, maximum = 0.999, step = 0.01, label="Momentum Beta", elem_id = 'sega_momentum_beta', info="Beta for momentum, default 0.5")
                 active.do_not_save_to_config = True
-                neg_text.do_not_save_to_config = True
+                prompt.do_not_save_to_config = True
                 warmup.do_not_save_to_config = True
                 edit_guidance_scale.do_not_save_to_config = True
                 tail_percentage_threshold.do_not_save_to_config = True
                 momentum_scale.do_not_save_to_config = True
                 momentum_beta.do_not_save_to_config = True
-                return [active, neg_text, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta]
+                self.infotext_fields = [
+                        (active, 'SEGA Active'),
+                        (prompt, 'SEGA Prompt'),
+                        (warmup, 'SEGA Warmup Period'),
+                        (edit_guidance_scale, 'SEGA Edit Guidance Scale'),
+                        (tail_percentage_threshold, 'SEGA Tail Percentage Threshold'),
+                        (momentum_scale, 'SEGA Momentum Scale'),
+                        (momentum_beta, 'SEGA Momentum Beta'),
+                ]
+                self.paste_field_names = [
+                        'sega_active',
+                        'sega_prompt',
+                        'sega_warmup',
+                        'sega_edit_guidance_scale',
+                        'sega_tail_percentage_threshold',
+                        'sega_momentum_scale',
+                        'sega_momentum_beta'
+                ]
+                return [active, prompt, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta]
 
         def process_batch(self, p: StableDiffusionProcessing, active, neg_text, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
                 active = getattr(p, "sega_active", active)
                 if active is False:
                         return
-                neg_text = getattr(p, "sega_neg_text", neg_text)
+                neg_text = getattr(p, "sega_prompt", neg_text)
                 steps = p.steps
                 p.extra_generation_params = {
                         "SEGA Active": active,
-                        "SEGA Negative Prompt": neg_text,
+                        "SEGA Prompt": neg_text,
                         "SEGA Warmup Period": warmup,
                         "SEGA Edit Guidance Scale": edit_guidance_scale,
                         "SEGA Tail Percentage Threshold": tail_percentage_threshold,
