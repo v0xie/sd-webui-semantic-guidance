@@ -117,7 +117,8 @@ class SegaExtensionScript(scripts.Script):
                 }
 
                 #neg_text_ps = get_multicond_prompt_list([neg_text])
-                prompts = prompt_parser.SdConditioning([neg_text], width=p.width, height=p.height)
+                prompt_list = [neg_text] * p.batch_size
+                prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
                 c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
 
                 #print('neg_text_ps', c)
@@ -184,7 +185,7 @@ class SegaExtensionScript(scripts.Script):
                 repeats = [len(conds_list[i]) for i in range(batch_size)]
                 padded_cond_uncond = False
 
-                if shared.opts.pad_cond_uncond and text_cond.shape[1] != text_uncond.shape[1]:
+                if text_cond.shape[1] != text_uncond.shape[1]:
                         empty = shared.sd_model.cond_stage_model_empty_prompt
                         num_repeats = (text_cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
 
@@ -225,17 +226,6 @@ class SegaExtensionScript(scripts.Script):
                                         c_crossattn = subscript_cond(tensor, a, b)
                                 else:
                                         c_crossattn = torch.cat([tensor[a:b]], text_uncond)
-
-                                #x_out[a:b] = self.inner_model(x_in[a:b], sigma_in[a:b], cond=make_condition_dict(c_crossattn, image_cond_in[a:b]))
-
-                #if not skip_uncond:
-                #        x_out[-uncond.shape[0]:] = self.inner_model(x_in[-uncond.shape[0]:], sigma_in[-uncond.shape[0]:], cond=make_condition_dict(uncond, image_cond_in[-uncond.shape[0]:]))
-
-                #if sega_params.cond is None:
-                #        sega_params.cond = text_cond
-                #if sega_params.uncond is None:
-                #        sega_params.uncond = text_uncond
-
 
                 edit_dir_dict = {}
                 # Semantic Guidance
