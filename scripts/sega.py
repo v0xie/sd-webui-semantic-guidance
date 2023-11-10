@@ -116,12 +116,12 @@ class SegaExtensionScript(scripts.Script):
                         "SEGA Momentum Beta": momentum_beta,
                 }
 
-                #neg_text_ps = get_multicond_prompt_list([neg_text])
+                # this creates conds for the entire prompt 
+                # TODO: create conds for each concept in the prompt
                 prompt_list = [neg_text] * p.batch_size
                 prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
 
-                #print('neg_text_ps', c)
+                c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
                 self.create_hook(p, active, c, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta)
 
         
@@ -135,13 +135,9 @@ class SegaExtensionScript(scripts.Script):
                 sega_params.momentum_beta = momentum_beta
 
                 y = lambda params: self.on_cfg_denoiser_callback(params, neg_text, sega_params)
-                denoised_y = lambda params: self.on_cfg_denoised_callback(params, neg_text, sega_params)
-                #after_cfg_y = lambda params: self.on_cfg_after_cfg_callback(params, neg_text)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(y)
-                script_callbacks.on_cfg_denoised(denoised_y)
-                #script_callbacks.on_cfg_after_cfg(after_cfg_y)
                 script_callbacks.on_script_unloaded(self.unhook_callbacks)
 
         def postprocess_batch(self, p, active, neg_text, *args, **kwargs):
@@ -154,14 +150,6 @@ class SegaExtensionScript(scripts.Script):
                 logger.debug('Unhooked callbacks')
                 script_callbacks.remove_current_script_callbacks()
         
-        def on_cfg_denoised_callback(self, params: CFGDenoisedParams, neg_text_ps, sega_params: SegaStateParams):
-                inner_model = params.inner_model
-                #c, uc = inner_model.p.get_conds()
-                #inner_model.sampler.sampler_extra_args['cond'] = c
-                #inner_model.sampler.sampler_extra_args['uncond'] = uc
-                #print('cfg denoised')
-
-
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, neg_text_ps, sega_params: SegaStateParams):
                 total_sampling_steps = params.total_sampling_steps
                 warmup_period = max(round(total_sampling_steps * sega_params.warmup_period), 0)
@@ -185,6 +173,9 @@ class SegaExtensionScript(scripts.Script):
                 repeats = [len(conds_list[i]) for i in range(batch_size)]
                 padded_cond_uncond = False
 
+                # pad text_cond or text_uncond to match the length of the longest prompt
+                # i would prefer to let sd_samplers_cfg_denoiser.py handle the padding, but 
+                # there isn't a callback that returns the padded conds
                 if text_cond.shape[1] != text_uncond.shape[1]:
                         empty = shared.sd_model.cond_stage_model_empty_prompt
                         num_repeats = (text_cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
@@ -196,44 +187,13 @@ class SegaExtensionScript(scripts.Script):
                                 text_uncond = pad_cond(text_uncond, num_repeats, empty)
                                 padded_cond_uncond = True
 
-                        # concatenates the unconditioned text to the conditioned text along dim 0
-                        # so [1, 154, 2048] becomes [2, 154, 2048] for crossattn
-                        #    [1, 2816] becomes [2, 2816] for vector
-                        #if text_cond.shape[1] == text_uncond.shape[1] or skip_uncond:
-                        #        if is_edit_model:
-                        #                cond_in = catenate_conds([text_cond, text_uncond, text_uncond])
-                        #        elif skip_uncond:
-                        #                cond_in = text_cond
-                        #        else:
-                        #                cond_in = catenate_conds([text_cond, text_uncond])
-
-                        #if shared.opts.batch_cond_uncond:
-                        #        x_out = self.inner_model(x_in, sigma_in, cond=make_condition_dict(cond_in, image_cond_in))
-                        #else:
-                        #        x_out = torch.zeros_like(x_in)
-                        #        for batch_offset in range(0, x_out.shape[0], batch_size):
-                        #                a = batch_offset
-                        #                b = a + batch_size
-                        #                x_out[a:b] = self.inner_model(x_in[a:b], sigma_in[a:b], cond=make_condition_dict(subscript_cond(cond_in, a, b), image_cond_in[a:b]))
-                else:
-                        #x_out = torch.zeros_like(x_in)
-                        batch_size = batch_size*2 if shared.opts.batch_cond_uncond else batch_size
-                        for batch_offset in range(0, tensor.shape[0], batch_size):
-                                a = batch_offset
-                                b = min(a + batch_size, tensor.shape[0])
-
-                                if not is_edit_model:
-                                        c_crossattn = subscript_cond(tensor, a, b)
-                                else:
-                                        c_crossattn = torch.cat([tensor[a:b]], text_uncond)
+                # Semantic Guidance
 
                 edit_dir_dict = {}
-                # Semantic Guidance
+
                 # Calculate edit direction
                 for key, cond in tensor.items():
 
-                        # padded_cond_uncond = False
-                        #if shared.opts.pad_cond_uncond and cond.shape[1] != text_uncond[key].shape[1] and cond.dim() == text_uncond[key].dim():
                         if cond.shape[1] != text_uncond[key].shape[1]:
                                 empty = shared.sd_model.cond_stage_model_empty_prompt
                                 num_repeats = (cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
@@ -252,10 +212,6 @@ class SegaExtensionScript(scripts.Script):
                         cond_mean, cond_std = torch.mean(cond).item(), torch.std(cond).item()
 
                         # this slice is probably wrong
-                        # slice out the unconditioned text
-                        #if cond.shape != text_uncond[key].shape:
-                        #        edit_dir = cond - text_uncond[key][:, :cond.shape[1], :]
-                        #else:
                         edit_dir = cond - text_uncond[key]
 
                         # z-scores for tails
@@ -271,19 +227,16 @@ class SegaExtensionScript(scripts.Script):
                         edit_dir_abs = edit_dir.abs()
                         scale_tensor = torch.where((edit_dir_abs > upper_threshold), scale_tensor, zero_tensor)
 
+                        # update edit direction with the edit dir for this concept
                         guidance_strength = 0.0 if sampling_step < warmup_period else 1.0 # FIXME: Use appropriate guidance strength
                         edit_dir = torch.mul(scale_tensor, edit_dir)
                         edit_dir_dict[key] = edit_dir_dict[key] + guidance_strength * edit_dir
 
                 for key, dir in edit_dir_dict.items():
-                        # multiply summed edit dir by text condition
-                        #dir = dir * text_cond[key]
-
                         # calculate momentum scale and velocity
                         if key not in sega_params.v.keys():
                                 sega_params.v[key] = torch.zeros_like(dir, dtype=dir.dtype, device=dir.device)
 
-                        #text_cond[key] = dir + torch.mul(momentum_scale, sega_params.v[key])
                         # add to text condition
                         v_t = sega_params.v[key]
                         dir = dir + torch.mul(momentum_scale, v_t)
@@ -291,17 +244,11 @@ class SegaExtensionScript(scripts.Script):
                         # calculate v_t+1 and update state
                         v_t_1 = momentum_beta * ((1 - momentum_beta) * v_t) * dir
 
+                        # add to cond after warmup elapsed
                         if sampling_step >= warmup_period:
-                                # FIXME: Hacky way to handle padding
-                                #if text_cond[key].dim() == 3 and text_cond[key].shape[1] != dir.shape[1]:
-                                #        if text_cond[key].shape[1] > dir.shape[1]:
-                                #                text_cond[key][:, :dir.shape[1], :] += dir
-                                #        else:
-                                #                text_cond[key] += dir[:, :text_cond[key].shape[1], :]
-                                #else:
                                 text_cond[key] = text_cond[key] + dir
-                                        #text_cond[key] = torch.add(text_cond[key], dir)
 
+                        # update velocity
                         sega_params.v[key] = v_t_1
 
         
