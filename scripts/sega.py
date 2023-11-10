@@ -60,8 +60,8 @@ class SegaExtensionScript(scripts.Script):
         # Setup menu ui detail
         def ui(self, is_img2img):
                 with gr.Accordion('Semantic Guidance', open=False):
-                        active = gr.Checkbox(value=True, default=False, label="Active", elem_id='sega_active')
-                        neg_text = gr.Textbox(lines=1, default="a photo of a cat", label="Negative Text", elem_id = 'sega_neg_text', info="Text to use for negative samples, default 'a photo of a cat'")
+                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='sega_active')
+                        neg_text = gr.Textbox(lines=1, label="Prompt", elem_id = 'sega_neg_text', info="Prompt goes here'")
                         with gr.Row():
                                 warmup = gr.Slider(value = 0.2, minimum = 0.0, maximum = 1.0, step = 0.01, label="Warmup Period", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 5")
                                 edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 10.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
