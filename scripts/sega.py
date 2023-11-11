@@ -176,9 +176,136 @@ class SegaExtensionScript(scripts.Script):
         
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, neg_text_ps, sega_params: list[SegaStateParams]):
                 # run routine for each concept
-                # todo: figure out a way to batch this
+                # TODO: figure out a way to batch this
+                # TODO: add option to opt out of batching for performance
+                sampling_step = params.sampling_step
+
+                padded_cond_uncond = False
+                text_cond = params.text_cond
+                text_uncond = params.text_uncond
+                if text_cond.shape[1] != text_uncond.shape[1]:
+                        empty = shared.sd_model.cond_stage_model_empty_prompt
+                        num_repeats = (text_cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
+
+                        if num_repeats < 0:
+                                text_cond = pad_cond(text_cond, -num_repeats, empty)
+                                padded_cond_uncond = True
+                        elif num_repeats > 0:
+                                text_uncond = pad_cond(text_uncond, num_repeats, empty)
+                                padded_cond_uncond = True
+
+                batch_conds_list = []
+                batch_tensor = {}
+
                 for i, sega_param in enumerate(sega_params):
-                        self.sega_routine(params, neg_text_ps[i], sega_param)
+                        conds_list, tensor_dict = reconstruct_multicond_batch(neg_text_ps[i], sampling_step)
+                        # initialize here because we don't know the shape/dtype of the tensor until we reconstruct it
+                        for key, tensor in tensor_dict.items():
+                                if tensor.shape[1] != text_uncond[key].shape[1]:
+                                        empty = shared.sd_model.cond_stage_model_empty_prompt
+                                        num_repeats = (tensor.shape[1] - text_uncond.shape[1]) // empty.shape[1]
+                                        if num_repeats < 0:
+                                                tensor = pad_cond(tensor, -num_repeats, empty)
+                                tensor = tensor.unsqueeze(0)
+                                if key not in batch_tensor.keys():
+                                        batch_tensor[key] = tensor
+                                else:
+                                        batch_tensor[key] = torch.cat((batch_tensor[key], tensor), dim=0)
+                        batch_conds_list.append(conds_list)
+                self.sega_routine_batch(params, batch_conds_list, batch_tensor, sega_params)
+
+        def sega_routine_batch(self, params: CFGDenoiserParams, batch_conds_list, batch_tensor, sega_params: list[SegaStateParams]):
+                total_sampling_steps = params.total_sampling_steps
+
+                # this should be per params
+                warmup_period = max(round(total_sampling_steps * sega_params[0].warmup_period), 0)
+                edit_guidance_scale = sega_params[0].edit_guidance_scale
+                tail_percentage_threshold = sega_params[0].tail_percentage_threshold
+                momentum_scale = sega_params[0].momentum_scale
+                momentum_beta = sega_params[0].momentum_beta
+
+                x = params.x
+                sampling_step = params.sampling_step
+                text_cond = params.text_cond
+                text_uncond = params.text_uncond
+
+                skip_uncond = False
+                is_edit_model = False # FIXME: length of conds_list / AND prompts
+
+                # modules/sd_samplers_cfg_denoiser.py CFGDenoiser.forward
+
+                # batch_tensor already has the reconstructed conds [num_concepts, ...]
+                #conds_list, tensor = reconstruct_multicond_batch(batch_tensor, sampling_step)
+                #num_concepts = batch_tensor.shape[0]
+
+                padded_cond_uncond = False
+
+                # pad text_cond or text_uncond to match the length of the longest prompt
+                # i would prefer to let sd_samplers_cfg_denoiser.py handle the padding, but 
+                # there isn't a callback that returns the padded conds
+                # if text_cond.shape[1] != text_uncond.shape[1]:
+                #         empty = shared.sd_model.cond_stage_model_empty_prompt
+                #         num_repeats = (text_cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
+
+                #         if num_repeats < 0:
+                #                 text_cond = pad_cond(text_cond, -num_repeats, empty)
+                #                 padded_cond_uncond = True
+                #         elif num_repeats > 0:
+                #                 text_uncond = pad_cond(text_uncond, num_repeats, empty)
+                #                 padded_cond_uncond = True
+
+                # Semantic Guidance
+
+                edit_dir_dict = {}
+
+                # Calculate edit direction
+                for key, concept_cond in batch_tensor.items():
+
+                        if key not in edit_dir_dict.keys():
+                                edit_dir_dict[key] = torch.zeros_like(concept_cond, dtype=concept_cond.dtype, device=concept_cond.device)
+
+                        # filter out values in-between tails
+                        #cond_mean, cond_std = torch.mean(concept_cond).item(), torch.std(concept_cond).item()
+                        cond_mean, cond_std = torch.mean(concept_cond, dim=(-2,-1)), torch.std(concept_cond, dim=(-2,-1))
+
+                        edit_dir = concept_cond - text_uncond[key]
+
+                        # z-scores for tails
+                        upper_z = stats.norm.ppf(1.0 - tail_percentage_threshold)
+
+                        # numerical thresholds
+                        upper_threshold = cond_mean + (upper_z * cond_std)
+
+                        # zero out values in-between tails
+                        # elementwise multiplication between scale tensor and edit direction
+                        zero_tensor = torch.zeros_like(concept_cond, dtype=concept_cond.dtype, device=concept_cond.device)
+                        scale_tensor = torch.ones_like(concept_cond, dtype=concept_cond.dtype, device=concept_cond.device) * edit_guidance_scale
+                        edit_dir_abs = edit_dir.abs()
+                        scale_tensor = torch.where((edit_dir_abs > upper_threshold), scale_tensor, zero_tensor)
+
+                        # update edit direction with the edit dir for this concept
+                        guidance_strength = 0.0 if sampling_step < warmup_period else 1.0 # FIXME: Use appropriate guidance strength
+                        edit_dir = torch.mul(scale_tensor, edit_dir)
+                        edit_dir_dict[key] = edit_dir_dict[key] + guidance_strength * edit_dir
+
+                for key, dir in edit_dir_dict.items():
+                        # calculate momentum scale and velocity
+                        if key not in sega_params.v.keys():
+                                sega_params.v[key] = torch.zeros_like(dir, dtype=dir.dtype, device=dir.device)
+
+                        # add to text condition
+                        v_t = sega_params.v[key]
+                        dir = dir + torch.mul(momentum_scale, v_t)
+
+                        # calculate v_t+1 and update state
+                        v_t_1 = momentum_beta * ((1 - momentum_beta) * v_t) * dir
+
+                        # add to cond after warmup elapsed
+                        if sampling_step >= warmup_period:
+                                text_cond[key] = text_cond[key] + dir
+
+                        # update velocity
+                        sega_params.v[key] = v_t_1
 
         def sega_routine(self, params: CFGDenoiserParams, neg_text_ps, sega_params: SegaStateParams):
                 total_sampling_steps = params.total_sampling_steps
