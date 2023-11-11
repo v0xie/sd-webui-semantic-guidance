@@ -300,7 +300,8 @@ class SegaExtensionScript(scripts.Script):
                         for key, dir in edit_dir_dict.items():
                                 # calculate momentum scale and velocity
                                 if key not in sega_param.v.keys():
-                                        sega_param.v[key] = torch.zeros(dir.shape[-3:], dtype=dir.dtype, device=dir.device)
+                                        slice_idx = 1 - dir.dim() # should be negative, for dim=4, slice_idx = -3
+                                        sega_param.v[key] = torch.zeros(dir.shape[slice_idx:], dtype=dir.dtype, device=dir.device)
 
                                 # add to text condition
                                 v_t = sega_param.v[key]
