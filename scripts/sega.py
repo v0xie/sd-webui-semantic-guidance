@@ -320,7 +320,7 @@ class SegaExtensionScript(scripts.Script):
 
         def sega_routine(self, params: CFGDenoiserParams, neg_text_ps, sega_params: SegaStateParams):
                 total_sampling_steps = params.total_sampling_steps
-                warmup_period = max(round(total_sampling_steps * sega_params.warmup_period), 0)
+                warmup_period = sega_params.warmup_period
                 edit_guidance_scale = sega_params.edit_guidance_scale
                 tail_percentage_threshold = sega_params.tail_percentage_threshold
                 momentum_scale = sega_params.momentum_scale
