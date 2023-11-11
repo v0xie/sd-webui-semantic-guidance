@@ -213,6 +213,10 @@ class SegaExtensionScript(scripts.Script):
                 padded_cond_uncond = False
                 text_cond = params.text_cond
                 text_uncond = params.text_uncond
+
+                # pad text_cond or text_uncond to match the length of the longest prompt
+                # i would prefer to let sd_samplers_cfg_denoiser.py handle the padding, but 
+                # there isn't a callback that returns the padded conds
                 if text_cond.shape[1] != text_uncond.shape[1]:
                         empty = shared.sd_model.cond_stage_model_empty_prompt
                         num_repeats = (text_cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
@@ -271,9 +275,6 @@ class SegaExtensionScript(scripts.Script):
 
                 padded_cond_uncond = False
 
-                # pad text_cond or text_uncond to match the length of the longest prompt
-                # i would prefer to let sd_samplers_cfg_denoiser.py handle the padding, but 
-                # there isn't a callback that returns the padded conds
                 # if text_cond.shape[1] != text_uncond.shape[1]:
                 #         empty = shared.sd_model.cond_stage_model_empty_prompt
                 #         num_repeats = (text_cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
