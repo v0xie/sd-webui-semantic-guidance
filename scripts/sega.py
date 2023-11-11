@@ -265,8 +265,8 @@ class SegaExtensionScript(scripts.Script):
                                 edit_dir_dict[key] = torch.zeros_like(concept_cond, dtype=concept_cond.dtype, device=concept_cond.device)
 
                         # filter out values in-between tails
-                        #cond_mean, cond_std = torch.mean(concept_cond).item(), torch.std(concept_cond).item()
-                        cond_mean, cond_std = torch.mean(concept_cond, dim=(-2,-1)), torch.std(concept_cond, dim=(-2,-1))
+                        # FIXME: does this take into account image batch size?, i.e. dim 1
+                        cond_mean, cond_std = torch.mean(concept_cond, dim=(-3,-2,-1)), torch.std(concept_cond, dim=(-3,-2,-1))
 
                         # broadcast element-wise subtraction
                         edit_dir = concept_cond - text_uncond[key]
@@ -275,14 +275,25 @@ class SegaExtensionScript(scripts.Script):
                         upper_z = stats.norm.ppf(1.0 - tail_percentage_threshold)
 
                         # numerical thresholds
+                        # FIXME: does this take into account image batch size?, i.e. dim 1
                         upper_threshold = cond_mean + (upper_z * cond_std)
+                        
+                        # reshape to be able to broadcast / use torch.where to filter out values for each concept
+                        # for dim = 4, new_shape will be (-1, 1, 1, 1), for dim=3, new_shape will be (-1, 1, 1), etc.
+                        new_shape = (-1,) + (1,) * (concept_cond.dim() - 1)
+                        upper_threshold_reshaped = upper_threshold.view(new_shape)
+
+                        if len(concept_cond.shape) == 4:
+                                upper_threshold_reshaped = upper_threshold.view(-1, 1, 1, 1)
+                        elif len(concept_cond.shape) == 3:
+                                upper_threshold_reshaped = upper_threshold.view(-1, 1, 1)
 
                         # zero out values in-between tails
                         # elementwise multiplication between scale tensor and edit direction
                         zero_tensor = torch.zeros_like(concept_cond, dtype=concept_cond.dtype, device=concept_cond.device)
                         scale_tensor = torch.ones_like(concept_cond, dtype=concept_cond.dtype, device=concept_cond.device) * edit_guidance_scale
                         edit_dir_abs = edit_dir.abs()
-                        scale_tensor = torch.where((edit_dir_abs > upper_threshold), scale_tensor, zero_tensor)
+                        scale_tensor = torch.where((edit_dir_abs > upper_threshold_reshaped), scale_tensor, zero_tensor)
 
                         # update edit direction with the edit dir for this concept
                         guidance_strength = 0.0 if sampling_step < warmup_period else 1.0 # FIXME: Use appropriate guidance strength
