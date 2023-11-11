@@ -283,11 +283,6 @@ class SegaExtensionScript(scripts.Script):
                         new_shape = (-1,) + (1,) * (concept_cond.dim() - 1)
                         upper_threshold_reshaped = upper_threshold.view(new_shape)
 
-                        if len(concept_cond.shape) == 4:
-                                upper_threshold_reshaped = upper_threshold.view(-1, 1, 1, 1)
-                        elif len(concept_cond.shape) == 3:
-                                upper_threshold_reshaped = upper_threshold.view(-1, 1, 1)
-
                         # zero out values in-between tails
                         # elementwise multiplication between scale tensor and edit direction
                         zero_tensor = torch.zeros_like(concept_cond, dtype=concept_cond.dtype, device=concept_cond.device)
