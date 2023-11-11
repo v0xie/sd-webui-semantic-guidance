@@ -70,6 +70,7 @@ class SegaExtensionScript(scripts.Script):
                                 prompt = gr.Textbox(lines=1, label="Prompt", elem_id = 'sega_prompt', info="Prompt goes here'")
                         with gr.Row():
                                 neg_prompt = gr.Textbox(lines=1, label="Negative Prompt", elem_id = 'sega_neg_prompt', info="Negative Prompt goes here'")
+                        with gr.Row():
                                 warmup = gr.Slider(value = 0.2, minimum = 0.0, maximum = 1.0, step = 0.01, label="Warmup Period", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 5")
                                 edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 10.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
                                 tail_percentage_threshold = gr.Slider(value = 0.25, minimum = 0.0, maximum = 1.0, step = 0.01, label="Tail Percentage Threshold", elem_id = 'sega_tail_percentage_threshold', info="Threshold for tail percentage, default 0.25")
@@ -248,6 +249,7 @@ class SegaExtensionScript(scripts.Script):
 
                 # this should be per params
                 warmup_period = max(round(total_sampling_steps * sega_params[0].warmup_period), 0)
+                edit_guidance_scale = sega_params[0].edit_guidance_scale
                 tail_percentage_threshold = sega_params[0].tail_percentage_threshold
                 momentum_scale = sega_params[0].momentum_scale
                 momentum_beta = sega_params[0].momentum_beta
@@ -286,18 +288,21 @@ class SegaExtensionScript(scripts.Script):
 
                 edit_dir_dict = {}
 
-                edit_guidance_scale = torch.Tensor([params.edit_guidance_scale for params in sega_params])
-                strength = torch.Tensor([params.strength for params in sega_params])
+                # edit_guidance_scale = torch.Tensor([params.edit_guidance_scale for params in sega_params])
 
                 # Calculate edit direction
                 for key, concept_cond in batch_tensor.items():
+                        new_shape = (-1,) + (1,) * (concept_cond.dim() - 1)
+                        strength = torch.Tensor([params.strength for params in sega_params]).to(dtype=concept_cond.dtype, device=concept_cond.device)
+                        strength = strength.view(new_shape)
 
                         if key not in edit_dir_dict.keys():
                                 edit_dir_dict[key] = torch.zeros_like(concept_cond, dtype=concept_cond.dtype, device=concept_cond.device)
 
                         # filter out values in-between tails
                         # FIXME: does this take into account image batch size?, i.e. dim 1
-                        cond_mean, cond_std = torch.mean(concept_cond, dim=(-3,-2,-1)), torch.std(concept_cond, dim=(-3,-2,-1))
+                        inside_dim = tuple(range(-concept_cond.dim() + 1, 0)) # for tensor of dim 4, returns (-3, -2, -1), for tensor of dim 3, returns (-2, -1)
+                        cond_mean, cond_std = torch.mean(concept_cond, dim=inside_dim), torch.std(concept_cond, dim=inside_dim)
 
                         # broadcast element-wise subtraction
                         edit_dir = concept_cond - text_uncond[key]
