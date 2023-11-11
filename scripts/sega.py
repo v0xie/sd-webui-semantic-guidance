@@ -113,10 +113,10 @@ class SegaExtensionScript(scripts.Script):
                 # FIXME: must have some prompt
                 prompt = getattr(p, "sega_prompt", prompt)
                 #neg_prompt = getattr(p, "sega_neg_prompt", neg_prompt)
-                if prompt is None:
-                        return
-                if len(prompt) == 0:
-                        return
+                #if prompt is None:
+                #        return
+                #if len(prompt) == 0:
+                #        return
                 steps = p.steps
                 p.extra_generation_params = {
                         "SEGA Active": active,
