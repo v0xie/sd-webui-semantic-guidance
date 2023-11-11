@@ -67,9 +67,9 @@ class SegaExtensionScript(scripts.Script):
                 with gr.Accordion('Semantic Guidance', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='sega_active')
                         with gr.Row():
-                                prompt = gr.Textbox(lines=1, label="Prompt", elem_id = 'sega_prompt', info="Prompt goes here'")
+                                prompt = gr.Textbox(lines=2, label="Prompt", elem_id = 'sega_prompt', info="Prompt goes here'")
                         with gr.Row():
-                                neg_prompt = gr.Textbox(lines=1, label="Negative Prompt", elem_id = 'sega_neg_prompt', info="Negative Prompt goes here'")
+                                neg_prompt = gr.Textbox(lines=2, label="Negative Prompt", elem_id = 'sega_neg_prompt', info="Negative Prompt goes here'")
                         with gr.Row():
                                 warmup = gr.Slider(value = 5, minimum = 0, maximum = 100, step = 1, label="Warmup Period", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 5")
                                 edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 10.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
@@ -266,32 +266,16 @@ class SegaExtensionScript(scripts.Script):
 
                 skip_uncond = False
                 is_edit_model = False # FIXME: length of conds_list / AND prompts
-
-                # modules/sd_samplers_cfg_denoiser.py CFGDenoiser.forward
-
-                # batch_tensor already has the reconstructed conds [num_concepts, ...]
-                #conds_list, tensor = reconstruct_multicond_batch(batch_tensor, sampling_step)
-                #num_concepts = batch_tensor.shape[0]
-
                 padded_cond_uncond = False
-
-                # if text_cond.shape[1] != text_uncond.shape[1]:
-                #         empty = shared.sd_model.cond_stage_model_empty_prompt
-                #         num_repeats = (text_cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
-
-                #         if num_repeats < 0:
-                #                 text_cond = pad_cond(text_cond, -num_repeats, empty)
-                #                 padded_cond_uncond = True
-                #         elif num_repeats > 0:
-                #                 text_uncond = pad_cond(text_uncond, num_repeats, empty)
-                #                 padded_cond_uncond = True
 
                 # Semantic Guidance
 
+                # for dim = 4, new_shape will be (-1, 1, 1, 1), for dim=3, new_shape will be (-1, 1, 1), etc.
+                make_tuple_dim = lambda dim: (-1,) + (1,) * (dim - 1)
+
                 edit_dir_dict = {}
 
-                # edit_guidance_scale = torch.Tensor([params.edit_guidance_scale for params in sega_params])
-
+                # batch_tensor: [num_concepts, batch_size, tokens(77, 154, etc.), 2048]
                 # Calculate edit direction
                 for key, concept_cond in batch_tensor.items():
                         new_shape = (-1,) + (1,) * (concept_cond.dim() - 1)
