@@ -268,6 +268,7 @@ class SegaExtensionScript(scripts.Script):
                         #cond_mean, cond_std = torch.mean(concept_cond).item(), torch.std(concept_cond).item()
                         cond_mean, cond_std = torch.mean(concept_cond, dim=(-2,-1)), torch.std(concept_cond, dim=(-2,-1))
 
+                        # broadcast element-wise subtraction
                         edit_dir = concept_cond - text_uncond[key]
 
                         # z-scores for tails
@@ -288,24 +289,26 @@ class SegaExtensionScript(scripts.Script):
                         edit_dir = torch.mul(scale_tensor, edit_dir)
                         edit_dir_dict[key] = edit_dir_dict[key] + guidance_strength * edit_dir
 
-                for key, dir in edit_dir_dict.items():
-                        # calculate momentum scale and velocity
-                        if key not in sega_params.v.keys():
-                                sega_params.v[key] = torch.zeros_like(dir, dtype=dir.dtype, device=dir.device)
+                # TODO: batch this
+                for i, sega_param in enumerate(sega_params):
+                        for key, dir in edit_dir_dict.items():
+                                # calculate momentum scale and velocity
+                                if key not in sega_param.v.keys():
+                                        sega_param.v[key] = torch.zeros(dir.shape[-3:], dtype=dir.dtype, device=dir.device)
 
-                        # add to text condition
-                        v_t = sega_params.v[key]
-                        dir = dir + torch.mul(momentum_scale, v_t)
+                                # add to text condition
+                                v_t = sega_param.v[key]
+                                dir[i] = dir[i] + torch.mul(momentum_scale, v_t)
 
-                        # calculate v_t+1 and update state
-                        v_t_1 = momentum_beta * ((1 - momentum_beta) * v_t) * dir
+                                # calculate v_t+1 and update state
+                                v_t_1 = momentum_beta * ((1 - momentum_beta) * v_t) * dir[i]
 
-                        # add to cond after warmup elapsed
-                        if sampling_step >= warmup_period:
-                                text_cond[key] = text_cond[key] + dir
+                                # add to cond after warmup elapsed
+                                if sampling_step >= warmup_period:
+                                        text_cond[key] = text_cond[key] + dir[i]
 
-                        # update velocity
-                        sega_params.v[key] = v_t_1
+                                # update velocity
+                                sega_param.v[key] = v_t_1
 
         def sega_routine(self, params: CFGDenoiserParams, neg_text_ps, sega_params: SegaStateParams):
                 total_sampling_steps = params.total_sampling_steps
