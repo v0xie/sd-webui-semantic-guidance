@@ -41,14 +41,13 @@ GitHub URL: https://github.com/v0xie/sd-webui-semantic-guidance
 
 class SegaStateParams:
         def __init__(self):
+                self.concept_name = ''
                 self.v = {} # velocity
                 self.warmup_period: int = 5 # [0, 20]
                 self.edit_guidance_scale: float = 1 # [0., 1.]
                 self.tail_percentage_threshold: float = 0.25 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
                 self.momentum_scale: float = 1.0 # [0., 1.]
                 self.momentum_beta: float = 0.5 # [0., 1.) # larger bm is less volatile changes in momentum
-                self.cond = None
-                self.uncond = None
 
 class SegaExtensionScript(scripts.Script):
         def __init__(self):
@@ -104,7 +103,12 @@ class SegaExtensionScript(scripts.Script):
                 active = getattr(p, "sega_active", active)
                 if active is False:
                         return
+                # must have some prompt
                 neg_text = getattr(p, "sega_prompt", neg_text)
+                if neg_text is None:
+                        return
+                if len(neg_text) == 0:
+                        return
                 steps = p.steps
                 p.extra_generation_params = {
                         "SEGA Active": active,
@@ -116,25 +120,45 @@ class SegaExtensionScript(scripts.Script):
                         "SEGA Momentum Beta": momentum_beta,
                 }
 
-                # this creates conds for the entire prompt 
-                # TODO: create conds for each concept in the prompt
-                prompt_list = [neg_text] * p.batch_size
-                prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-
-                c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
-                self.create_hook(p, active, c, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta)
-
+                concept_conds = []
+                concept_prompts = self.parse_concept_prompt(neg_text)
+                for concept in concept_prompts:
+                        prompt_list = [concept] * p.batch_size
+                        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+                        c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
+                        concept_conds.append(c)
+                #prompt_list = [neg_text] * p.batch_size
+                #prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+                #c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
+                self.create_hook(p, active, concept_conds, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta)
         
-        def create_hook(self, p, active, neg_text, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
+        def parse_concept_prompt(self, prompt:str) -> list[str]:
+                """ 
+                Separate prompt by comma into a list of concepts
+                TODO: parse prompt into a list of concepts using A1111 functions 
+                >>> g = lambda prompt: self.parse_concept_prompt(prompt)
+                >>> g("apples")
+                ['apples']
+                >>> g("apple, banana, carrot")
+                ['apple', 'banana', 'carrot']
+                """
+                return [x.strip() for x in prompt.split(",")]
+        
+        def create_hook(self, p, active, concept_conds, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
                 # Use lambda to call the callback function with the parameters to avoid global variables
-                sega_params = SegaStateParams()
-                sega_params.warmup_period = warmup
-                sega_params.edit_guidance_scale = edit_guidance_scale
-                sega_params.tail_percentage_threshold = tail_percentage_threshold
-                sega_params.momentum_scale = momentum_scale
-                sega_params.momentum_beta = momentum_beta
 
-                y = lambda params: self.on_cfg_denoiser_callback(params, neg_text, sega_params)
+                # Create a list of parameters for each concept
+                concepts_sega_params = []
+                for concept in concept_conds:
+                        sega_params = SegaStateParams()
+                        sega_params.warmup_period = warmup
+                        sega_params.edit_guidance_scale = edit_guidance_scale
+                        sega_params.tail_percentage_threshold = tail_percentage_threshold
+                        sega_params.momentum_scale = momentum_scale
+                        sega_params.momentum_beta = momentum_beta
+                        concepts_sega_params.append(sega_params)
+
+                y = lambda params: self.on_cfg_denoiser_callback(params, concept_conds, concepts_sega_params)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(y)
@@ -150,7 +174,13 @@ class SegaExtensionScript(scripts.Script):
                 logger.debug('Unhooked callbacks')
                 script_callbacks.remove_current_script_callbacks()
         
-        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, neg_text_ps, sega_params: SegaStateParams):
+        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, neg_text_ps, sega_params: list[SegaStateParams]):
+                # run routine for each concept
+                # todo: figure out a way to batch this
+                for i, sega_param in enumerate(sega_params):
+                        self.sega_routine(params, neg_text_ps[i], sega_param)
+
+        def sega_routine(self, params: CFGDenoiserParams, neg_text_ps, sega_params: SegaStateParams):
                 total_sampling_steps = params.total_sampling_steps
                 warmup_period = max(round(total_sampling_steps * sega_params.warmup_period), 0)
                 edit_guidance_scale = sega_params.edit_guidance_scale
@@ -169,8 +199,6 @@ class SegaExtensionScript(scripts.Script):
                 # modules/sd_samplers_cfg_denoiser.py CFGDenoiser.forward
                 conds_list, tensor = reconstruct_multicond_batch(neg_text_ps, sampling_step)
 
-                batch_size = len(conds_list)
-                repeats = [len(conds_list[i]) for i in range(batch_size)]
                 padded_cond_uncond = False
 
                 # pad text_cond or text_uncond to match the length of the longest prompt
@@ -188,6 +216,12 @@ class SegaExtensionScript(scripts.Script):
                                 padded_cond_uncond = True
 
                 # Semantic Guidance
+
+                # each element is (conds_list, tensor)
+                #conds_list_tensor = []
+                #for concept in neg_text_ps:
+                #        conds_list_c, tensor_c = reconstruct_multicond_batch(concept, sampling_step)
+                #        conds_list_tensor.append((conds_list_c, tensor_c))
 
                 edit_dir_dict = {}
 
