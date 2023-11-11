@@ -48,6 +48,7 @@ class SegaStateParams:
                 self.tail_percentage_threshold: float = 0.25 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
                 self.momentum_scale: float = 1.0 # [0., 1.]
                 self.momentum_beta: float = 0.5 # [0., 1.) # larger bm is less volatile changes in momentum
+                self.strength = 1.0
 
 class SegaExtensionScript(scripts.Script):
         def __init__(self):
@@ -65,8 +66,10 @@ class SegaExtensionScript(scripts.Script):
         def ui(self, is_img2img):
                 with gr.Accordion('Semantic Guidance', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='sega_active')
-                        prompt = gr.Textbox(lines=1, label="Prompt", elem_id = 'sega_prompt', info="Prompt goes here'")
                         with gr.Row():
+                                prompt = gr.Textbox(lines=1, label="Prompt", elem_id = 'sega_prompt', info="Prompt goes here'")
+                        with gr.Row():
+                                neg_prompt = gr.Textbox(lines=1, label="Negative Prompt", elem_id = 'sega_neg_prompt', info="Negative Prompt goes here'")
                                 warmup = gr.Slider(value = 0.2, minimum = 0.0, maximum = 1.0, step = 0.01, label="Warmup Period", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 5")
                                 edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 10.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
                                 tail_percentage_threshold = gr.Slider(value = 0.25, minimum = 0.0, maximum = 1.0, step = 0.01, label="Tail Percentage Threshold", elem_id = 'sega_tail_percentage_threshold', info="Threshold for tail percentage, default 0.25")
@@ -74,6 +77,7 @@ class SegaExtensionScript(scripts.Script):
                                 momentum_beta = gr.Slider(value = 0.5, minimum = 0.0, maximum = 0.999, step = 0.01, label="Momentum Beta", elem_id = 'sega_momentum_beta', info="Beta for momentum, default 0.5")
                 active.do_not_save_to_config = True
                 prompt.do_not_save_to_config = True
+                neg_prompt.do_not_save_to_config = True
                 warmup.do_not_save_to_config = True
                 edit_guidance_scale.do_not_save_to_config = True
                 tail_percentage_threshold.do_not_save_to_config = True
@@ -82,6 +86,7 @@ class SegaExtensionScript(scripts.Script):
                 self.infotext_fields = [
                         (active, 'SEGA Active'),
                         (prompt, 'SEGA Prompt'),
+                        (neg_prompt, 'SEGA Negative Prompt'),
                         (warmup, 'SEGA Warmup Period'),
                         (edit_guidance_scale, 'SEGA Edit Guidance Scale'),
                         (tail_percentage_threshold, 'SEGA Tail Percentage Threshold'),
@@ -91,28 +96,31 @@ class SegaExtensionScript(scripts.Script):
                 self.paste_field_names = [
                         'sega_active',
                         'sega_prompt',
+                        'sega_neg_prompt',
                         'sega_warmup',
                         'sega_edit_guidance_scale',
                         'sega_tail_percentage_threshold',
                         'sega_momentum_scale',
                         'sega_momentum_beta'
                 ]
-                return [active, prompt, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta]
+                return [active, prompt, neg_prompt, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta]
 
-        def process_batch(self, p: StableDiffusionProcessing, active, neg_text, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
+        def process_batch(self, p: StableDiffusionProcessing, active, prompt, neg_prompt, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
                 active = getattr(p, "sega_active", active)
                 if active is False:
                         return
-                # must have some prompt
-                neg_text = getattr(p, "sega_prompt", neg_text)
-                if neg_text is None:
+                # FIXME: must have some prompt
+                prompt = getattr(p, "sega_prompt", prompt)
+                #neg_prompt = getattr(p, "sega_neg_prompt", neg_prompt)
+                if prompt is None:
                         return
-                if len(neg_text) == 0:
+                if len(prompt) == 0:
                         return
                 steps = p.steps
                 p.extra_generation_params = {
                         "SEGA Active": active,
-                        "SEGA Prompt": neg_text,
+                        "SEGA Prompt": prompt,
+                        "SEGA Negative Prompt": neg_prompt,
                         "SEGA Warmup Period": warmup,
                         "SEGA Edit Guidance Scale": edit_guidance_scale,
                         "SEGA Tail Percentage Threshold": tail_percentage_threshold,
@@ -121,16 +129,23 @@ class SegaExtensionScript(scripts.Script):
                 }
 
                 concept_conds = []
-                concept_prompts = self.parse_concept_prompt(neg_text)
+                concept_conds_neg = []
+                concept_prompts = self.parse_concept_prompt(prompt)
+                concept_prompts_neg = self.parse_concept_prompt(neg_prompt)
                 for concept in concept_prompts:
                         prompt_list = [concept] * p.batch_size
                         prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
                         c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
                         concept_conds.append(c)
+                for concept in concept_prompts_neg:
+                        prompt_list = [concept] * p.batch_size
+                        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+                        c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
+                        concept_conds_neg.append(c)
                 #prompt_list = [neg_text] * p.batch_size
                 #prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
                 #c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
-                self.create_hook(p, active, concept_conds, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta)
+                self.create_hook(p, active, concept_conds, concept_conds_neg, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta)
         
         def parse_concept_prompt(self, prompt:str) -> list[str]:
                 """ 
@@ -144,7 +159,7 @@ class SegaExtensionScript(scripts.Script):
                 """
                 return [x.strip() for x in prompt.split(",")]
         
-        def create_hook(self, p, active, concept_conds, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
+        def create_hook(self, p, active, concept_conds, concept_conds_neg, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
                 # Use lambda to call the callback function with the parameters to avoid global variables
 
                 # Create a list of parameters for each concept
@@ -156,7 +171,21 @@ class SegaExtensionScript(scripts.Script):
                         sega_params.tail_percentage_threshold = tail_percentage_threshold
                         sega_params.momentum_scale = momentum_scale
                         sega_params.momentum_beta = momentum_beta
+                        sega_params.strength = 1.0 # FIXME: Use appropriate guidance strength
                         concepts_sega_params.append(sega_params)
+
+                for concept in concept_conds_neg:
+                        sega_params = SegaStateParams()
+                        sega_params.warmup_period = warmup
+                        sega_params.edit_guidance_scale = edit_guidance_scale
+                        sega_params.tail_percentage_threshold = tail_percentage_threshold
+                        sega_params.momentum_scale = momentum_scale
+                        sega_params.momentum_beta = momentum_beta
+                        sega_params.strength = -1.0 # FIXME: Use appropriate guidance strength
+                        concepts_sega_params.append(sega_params)
+                
+                # append negative conds to end
+                concept_conds.extend(concept_conds_neg)
 
                 y = lambda params: self.on_cfg_denoiser_callback(params, concept_conds, concepts_sega_params)
 
@@ -219,7 +248,6 @@ class SegaExtensionScript(scripts.Script):
 
                 # this should be per params
                 warmup_period = max(round(total_sampling_steps * sega_params[0].warmup_period), 0)
-                edit_guidance_scale = sega_params[0].edit_guidance_scale
                 tail_percentage_threshold = sega_params[0].tail_percentage_threshold
                 momentum_scale = sega_params[0].momentum_scale
                 momentum_beta = sega_params[0].momentum_beta
@@ -258,6 +286,9 @@ class SegaExtensionScript(scripts.Script):
 
                 edit_dir_dict = {}
 
+                edit_guidance_scale = torch.Tensor([params.edit_guidance_scale for params in sega_params])
+                strength = torch.Tensor([params.strength for params in sega_params])
+
                 # Calculate edit direction
                 for key, concept_cond in batch_tensor.items():
 
@@ -270,6 +301,9 @@ class SegaExtensionScript(scripts.Script):
 
                         # broadcast element-wise subtraction
                         edit_dir = concept_cond - text_uncond[key]
+
+                        # multiply by strength for positive / negative direction
+                        edit_dir = torch.mul(strength, edit_dir)
 
                         # z-scores for tails
                         upper_z = stats.norm.ppf(1.0 - tail_percentage_threshold)
@@ -317,6 +351,8 @@ class SegaExtensionScript(scripts.Script):
                                 # update velocity
                                 sega_param.v[key] = v_t_1
 
+        # TODO: positive / negative
+        # actually, we can just call batch routine iteratively for each concept instead of having a whole separate routine
         def sega_routine(self, params: CFGDenoiserParams, neg_text_ps, sega_params: SegaStateParams):
                 total_sampling_steps = params.total_sampling_steps
                 warmup_period = max(round(total_sampling_steps * sega_params.warmup_period), 0)
