@@ -71,7 +71,7 @@ class SegaExtensionScript(scripts.Script):
                         with gr.Row():
                                 neg_prompt = gr.Textbox(lines=1, label="Negative Prompt", elem_id = 'sega_neg_prompt', info="Negative Prompt goes here'")
                         with gr.Row():
-                                warmup = gr.Slider(value = 0.2, minimum = 0.0, maximum = 1.0, step = 0.01, label="Warmup Period", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 5")
+                                warmup = gr.Slider(value = 5, minimum = 0, maximum = 100, step = 1, label="Warmup Period", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 5")
                                 edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 10.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
                                 tail_percentage_threshold = gr.Slider(value = 0.25, minimum = 0.0, maximum = 1.0, step = 0.01, label="Tail Percentage Threshold", elem_id = 'sega_tail_percentage_threshold', info="Threshold for tail percentage, default 0.25")
                                 momentum_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 1.0, step = 0.01, label="Momentum Scale", elem_id = 'sega_momentum_scale', info="Scale of momentum, default 1.0")
@@ -248,7 +248,8 @@ class SegaExtensionScript(scripts.Script):
                 total_sampling_steps = params.total_sampling_steps
 
                 # this should be per params
-                warmup_period = max(round(total_sampling_steps * sega_params[0].warmup_period), 0)
+                #warmup_period = max(round(total_sampling_steps * sega_params[0].warmup_period), 0)
+                warmup_period = sega_params[0].warmup_period
                 edit_guidance_scale = sega_params[0].edit_guidance_scale
                 tail_percentage_threshold = sega_params[0].tail_percentage_threshold
                 momentum_scale = sega_params[0].momentum_scale
@@ -360,7 +361,7 @@ class SegaExtensionScript(scripts.Script):
         # actually, we can just call batch routine iteratively for each concept instead of having a whole separate routine
         def sega_routine(self, params: CFGDenoiserParams, neg_text_ps, sega_params: SegaStateParams):
                 total_sampling_steps = params.total_sampling_steps
-                warmup_period = max(round(total_sampling_steps * sega_params.warmup_period), 0)
+                warmup_period = sega_params.warmup_period
                 edit_guidance_scale = sega_params.edit_guidance_scale
                 tail_percentage_threshold = sega_params.tail_percentage_threshold
                 momentum_scale = sega_params.momentum_scale
