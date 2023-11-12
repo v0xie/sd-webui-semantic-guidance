@@ -5,15 +5,14 @@ Semantic Guidance gives you more control over the semantics of an image given an
 ![image](samples/comparison.png)
 
 ### Issues / PR's are welcome!
-This is a very work-in-progress extension hacked together in a couple hours, so there any bug reports / PRs are much appreciated.
 
 ### Feature / To-do List
 - [x] SD XL support  
-- [?] SD 1.5 support (untested)
-- [ ] Use A1111 prompt syntax for attention strength
+- [ ] SD 1.5 support (untested)
+- [x] Support A1111 prompt attention syntax and shortcuts for attention strength
+- [x] Support restoring parameter values from infotext (Send to Txt2Img, Send to Img2Img, etc.)
+- [ ] XYZ plot support
 - [ ] Support semantic guidance prompt in regular Positive/Negative Prompt fields
-- [ ] Support restoring parameter values from infotext (Send to Txt2Img, Send to Img2Img, etc.)
-- [ ] Write infotext to image grids
 
 ### Credits
 - The authors of the original paper for their method (https://arxiv.org/abs/2301.12247):
@@ -27,5 +26,6 @@ This is a very work-in-progress extension hacked together in a couple hours, so 
 		primaryClass={cs.CV}
 	}
 	```
-- @udon-universe's extension templates (https://github.com/udon-universe/stable-diffusion-webui-extension-templates)
+- Official implementation of Semantic Guidance for Diffusion: (https://github.com/ml-research/semantic-image-editing)
+- @udon-universe's extension templates: (https://github.com/udon-universe/stable-diffusion-webui-extension-templates)
 
