@@ -148,11 +148,15 @@ class SegaExtensionScript(scripts.Script):
                 Separate prompt by comma into a list of concepts
                 TODO: parse prompt into a list of concepts using A1111 functions
                 >>> g = lambda prompt: self.parse_concept_prompt(prompt)
+                >>> g("")
+                []
                 >>> g("apples")
                 ['apples']
                 >>> g("apple, banana, carrot")
                 ['apple', 'banana', 'carrot']
                 """
+                if len(prompt) == 0:
+                        return []
                 return [x.strip() for x in prompt.split(",")]
 
         def create_hook(self, p, active, concept_conds, concept_conds_neg, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
