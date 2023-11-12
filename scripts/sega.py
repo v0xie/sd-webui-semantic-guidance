@@ -67,9 +67,10 @@ class SegaExtensionScript(scripts.Script):
                 with gr.Accordion('Semantic Guidance', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='sega_active')
                         with gr.Row():
-                                prompt = gr.Textbox(lines=2, label="Prompt", elem_id = 'sega_prompt', info="Prompt goes here'")
+                                prompt = gr.Textbox(lines=2, label="Prompt", elem_id = 'sega_prompt', info="Prompt goes here'", elem_classes=["prompt"])
                         with gr.Row():
-                                neg_prompt = gr.Textbox(lines=2, label="Negative Prompt", elem_id = 'sega_neg_prompt', info="Negative Prompt goes here'")
+                                neg_prompt = gr.Textbox(lines=2, label="Negative Prompt", elem_id = 'sega_neg_prompt', info="Negative Prompt goes here'", elem_classes=["prompt"])
+
                         with gr.Row():
                                 warmup = gr.Slider(value = 5, minimum = 0, maximum = 100, step = 1, label="Warmup Period", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 5")
                                 edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 10.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
@@ -137,21 +138,23 @@ class SegaExtensionScript(scripts.Script):
                 # [[concept_1,  strength_1], ...]
                 concept_prompts = [prompt_parser.parse_prompt_attention(concept)[0] for concept in concept_prompts]
                 concept_prompts_neg = [prompt_parser.parse_prompt_attention(neg_concept)[0] for neg_concept in concept_prompts_neg]
+                concept_prompts_neg = [[concept, -strength] for concept, strength in concept_prompts_neg]
+                concept_prompts.extend(concept_prompts_neg)
 
                 for concept, strength in concept_prompts:
                         prompt_list = [concept] * p.batch_size
                         prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
                         c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
                         concept_conds.append([c, strength])
-                for concept, strength in concept_prompts_neg:
-                        prompt_list = [concept] * p.batch_size
-                        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                        c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
-                        concept_conds_neg.append([c, -strength])
+                #for concept, strength in concept_prompts_neg:
+                #        prompt_list = [concept] * p.batch_size
+                #        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+                #        c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
+                #        concept_conds_neg.append([c, -strength])
                 #prompt_list = [neg_text] * p.batch_size
                 #prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
                 #c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
-                self.create_hook(p, active, concept_conds, concept_conds_neg, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta)
+                self.create_hook(p, active, concept_conds, None, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta)
         
         def parse_concept_prompt(self, prompt:str) -> list[str]:
                 """ 
@@ -180,18 +183,18 @@ class SegaExtensionScript(scripts.Script):
                         sega_params.strength = strength
                         concepts_sega_params.append(sega_params)
 
-                for concept, strength in concept_conds_neg:
-                        sega_params = SegaStateParams()
-                        sega_params.warmup_period = warmup
-                        sega_params.edit_guidance_scale = edit_guidance_scale
-                        sega_params.tail_percentage_threshold = tail_percentage_threshold
-                        sega_params.momentum_scale = momentum_scale
-                        sega_params.momentum_beta = momentum_beta
-                        sega_params.strength = strength
-                        concepts_sega_params.append(sega_params)
+                #for concept, strength in concept_conds_neg:
+                #        sega_params = SegaStateParams()
+                #        sega_params.warmup_period = warmup
+                #        sega_params.edit_guidance_scale = edit_guidance_scale
+                #        sega_params.tail_percentage_threshold = tail_percentage_threshold
+                #        sega_params.momentum_scale = momentum_scale
+                #        sega_params.momentum_beta = momentum_beta
+                #        sega_params.strength = strength
+                #        concepts_sega_params.append(sega_params)
                 
                 # append negative conds to end
-                concept_conds.extend(concept_conds_neg)
+                #concept_conds.extend(concept_conds_neg)
 
                 y = lambda params: self.on_cfg_denoiser_callback(params, concept_conds, concepts_sega_params)
 
