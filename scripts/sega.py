@@ -39,11 +39,11 @@ class SegaStateParams:
         def __init__(self):
                 self.concept_name = ''
                 self.v = {} # velocity
-                self.warmup_period: int = 5 # [0, 20]
+                self.warmup_period: int = 10 # [0, 20]
                 self.edit_guidance_scale: float = 1 # [0., 1.]
-                self.tail_percentage_threshold: float = 0.25 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
-                self.momentum_scale: float = 1.0 # [0., 1.]
-                self.momentum_beta: float = 0.5 # [0., 1.) # larger bm is less volatile changes in momentum
+                self.tail_percentage_threshold: float = 0.05 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
+                self.momentum_scale: float = 0.3 # [0., 1.]
+                self.momentum_beta: float = 0.6 # [0., 1.) # larger bm is less volatile changes in momentum
                 self.strength = 1.0
 
 class SegaExtensionScript(scripts.Script):
@@ -67,11 +67,11 @@ class SegaExtensionScript(scripts.Script):
                         with gr.Row():
                                 neg_prompt = gr.Textbox(lines=2, label="Negative Prompt", elem_id = 'sega_neg_prompt', info="Negative Prompt goes here'", elem_classes=["prompt"])
                         with gr.Row():
-                                warmup = gr.Slider(value = 5, minimum = 0, maximum = 100, step = 1, label="Warmup Period", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 5")
-                                edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 10.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
-                                tail_percentage_threshold = gr.Slider(value = 0.25, minimum = 0.0, maximum = 1.0, step = 0.01, label="Tail Percentage Threshold", elem_id = 'sega_tail_percentage_threshold', info="Threshold for tail percentage, default 0.25")
-                                momentum_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 1.0, step = 0.01, label="Momentum Scale", elem_id = 'sega_momentum_scale', info="Scale of momentum, default 1.0")
-                                momentum_beta = gr.Slider(value = 0.5, minimum = 0.0, maximum = 0.999, step = 0.01, label="Momentum Beta", elem_id = 'sega_momentum_beta', info="Beta for momentum, default 0.5")
+                                warmup = gr.Slider(value = 10, minimum = 0, maximum = 30, step = 1, label="Warmup Period", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 10")
+                                edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 20.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
+                                tail_percentage_threshold = gr.Slider(value = 0.05, minimum = 0.0, maximum = 1.0, step = 0.01, label="Tail Percentage Threshold", elem_id = 'sega_tail_percentage_threshold', info="The percentage of latents to modify, default 0.05")
+                                momentum_scale = gr.Slider(value = 0.3, minimum = 0.0, maximum = 1.0, step = 0.01, label="Momentum Scale", elem_id = 'sega_momentum_scale', info="Scale of momentum, default 0.3")
+                                momentum_beta = gr.Slider(value = 0.6, minimum = 0.0, maximum = 0.999, step = 0.01, label="Momentum Beta", elem_id = 'sega_momentum_beta', info="Beta for momentum, default 0.6")
                 active.do_not_save_to_config = True
                 prompt.do_not_save_to_config = True
                 neg_prompt.do_not_save_to_config = True
