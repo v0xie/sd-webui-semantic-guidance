@@ -63,9 +63,9 @@ class SegaExtensionScript(scripts.Script):
                 with gr.Accordion('Semantic Guidance', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='sega_active')
                         with gr.Row():
-                                prompt = gr.Textbox(lines=2, label="Prompt", elem_id = 'sega_prompt', info="Prompt goes here'", elem_classes=["prompt"])
+                                prompt = gr.Textbox(lines=2, label="Prompt", elem_id = 'sega_prompt', elem_classes=["prompt"])
                         with gr.Row():
-                                neg_prompt = gr.Textbox(lines=2, label="Negative Prompt", elem_id = 'sega_neg_prompt', info="Negative Prompt goes here'", elem_classes=["prompt"])
+                                neg_prompt = gr.Textbox(lines=2, label="Negative Prompt", elem_id = 'sega_neg_prompt', elem_classes=["prompt"])
                         with gr.Row():
                                 warmup = gr.Slider(value = 10, minimum = 0, maximum = 30, step = 1, label="Warmup Period", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 10")
                                 edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 20.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
