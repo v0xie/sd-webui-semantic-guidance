@@ -259,16 +259,6 @@ class SegaExtensionScript(scripts.Script):
                 momentum_beta = sega_params[0].momentum_beta
 
                 sampling_step = params.sampling_step
-                #text_cond = params.text_cond
-                #text_uncond = params.text_uncond
-
-                #if isinstance(text_cond, torch.Tensor):
-                #        text_cond = {'crossattn': text_cond}
-                #if isinstance(text_uncond, torch.Tensor):
-                #        text_uncond = {'crossattn': text_uncond}
-
-                # for dim = 4, new_shape will be (-1, 1, 1, 1), for dim=3, new_shape will be (-1, 1, 1), etc.
-                # make_tuple_dim = lambda dim: (-1,) + (1,) * (dim - 1)
 
                 # Semantic Guidance
                 edit_dir_dict = {}
@@ -276,12 +266,6 @@ class SegaExtensionScript(scripts.Script):
                 # batch_tensor: [num_concepts, batch_size, tokens(77, 154, etc.), 2048]
                 # Calculate edit direction
                 for key, concept_cond in batch_tensor.items():
-                        #new_shape = (-1,) + (1,) * (concept_cond.dim() - 1)
-
-                        # sd 1.5 support
-                        #if not isinstance(concept_cond, dict):
-                        #        concept_cond = {'crossattn': concept_cond}
-
                         new_shape = self.make_tuple_dim(concept_cond)
                         strength = torch.Tensor([params.strength for params in sega_params]).to(dtype=concept_cond.dtype, device=concept_cond.device)
                         strength = strength.view(new_shape)
@@ -340,6 +324,7 @@ class SegaExtensionScript(scripts.Script):
                                 v_t_1 = momentum_beta * ((1 - momentum_beta) * v_t) * dir[i]
 
                                 # add to cond after warmup elapsed
+                                # for sd 1.5, we must add to the original params.text_cond because we reassigned text_cond
                                 if sampling_step >= warmup_period:
                                         if isinstance(params.text_cond, dict):
                                                 params.text_cond[key] = params.text_cond[key] + dir[i]
