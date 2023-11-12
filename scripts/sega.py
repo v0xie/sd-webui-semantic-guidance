@@ -209,7 +209,7 @@ class SegaExtensionScript(scripts.Script):
                 logger.debug('Unhooked callbacks')
                 script_callbacks.remove_current_script_callbacks()
         
-        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, neg_text_ps, sega_params: list[SegaStateParams]):
+        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, concept_conds, sega_params: list[SegaStateParams]):
                 # run routine for each concept
                 # TODO: figure out a way to batch this
                 # TODO: add option to opt out of batching for performance
@@ -237,7 +237,7 @@ class SegaExtensionScript(scripts.Script):
                 batch_tensor = {}
 
                 for i, sega_param in enumerate(sega_params):
-                        concept_cond, _ = neg_text_ps[i]
+                        concept_cond, _ = concept_conds[i]
                         conds_list, tensor_dict = reconstruct_multicond_batch(concept_cond, sampling_step)
                         # initialize here because we don't know the shape/dtype of the tensor until we reconstruct it
                         for key, tensor in tensor_dict.items():
