@@ -67,9 +67,10 @@ class SegaExtensionScript(scripts.Script):
                 with gr.Accordion('Semantic Guidance', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='sega_active')
                         with gr.Row():
-                                prompt = gr.Textbox(lines=1, label="Prompt", elem_id = 'sega_prompt', info="Prompt goes here'")
+                                prompt = gr.Textbox(lines=2, label="Prompt", elem_id = 'sega_prompt', info="Prompt goes here'", elem_classes=["prompt"])
                         with gr.Row():
-                                neg_prompt = gr.Textbox(lines=1, label="Negative Prompt", elem_id = 'sega_neg_prompt', info="Negative Prompt goes here'")
+                                neg_prompt = gr.Textbox(lines=2, label="Negative Prompt", elem_id = 'sega_neg_prompt', info="Negative Prompt goes here'", elem_classes=["prompt"])
+
                         with gr.Row():
                                 warmup = gr.Slider(value = 5, minimum = 0, maximum = 100, step = 1, label="Warmup Period", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 5")
                                 edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 10.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
@@ -131,22 +132,29 @@ class SegaExtensionScript(scripts.Script):
 
                 concept_conds = []
                 concept_conds_neg = []
+                # separate concepts by comma
                 concept_prompts = self.parse_concept_prompt(prompt)
                 concept_prompts_neg = self.parse_concept_prompt(neg_prompt)
-                for concept in concept_prompts:
+                # [[concept_1,  strength_1], ...]
+                concept_prompts = [prompt_parser.parse_prompt_attention(concept)[0] for concept in concept_prompts]
+                concept_prompts_neg = [prompt_parser.parse_prompt_attention(neg_concept)[0] for neg_concept in concept_prompts_neg]
+                concept_prompts_neg = [[concept, -strength] for concept, strength in concept_prompts_neg]
+                concept_prompts.extend(concept_prompts_neg)
+
+                for concept, strength in concept_prompts:
                         prompt_list = [concept] * p.batch_size
                         prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
                         c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
-                        concept_conds.append(c)
-                for concept in concept_prompts_neg:
-                        prompt_list = [concept] * p.batch_size
-                        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                        c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
-                        concept_conds_neg.append(c)
+                        concept_conds.append([c, strength])
+                #for concept, strength in concept_prompts_neg:
+                #        prompt_list = [concept] * p.batch_size
+                #        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+                #        c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
+                #        concept_conds_neg.append([c, -strength])
                 #prompt_list = [neg_text] * p.batch_size
                 #prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
                 #c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
-                self.create_hook(p, active, concept_conds, concept_conds_neg, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta)
+                self.create_hook(p, active, concept_conds, None, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta)
         
         def parse_concept_prompt(self, prompt:str) -> list[str]:
                 """ 
@@ -165,28 +173,28 @@ class SegaExtensionScript(scripts.Script):
 
                 # Create a list of parameters for each concept
                 concepts_sega_params = []
-                for concept in concept_conds:
+                for concept, strength in concept_conds:
                         sega_params = SegaStateParams()
                         sega_params.warmup_period = warmup
                         sega_params.edit_guidance_scale = edit_guidance_scale
                         sega_params.tail_percentage_threshold = tail_percentage_threshold
                         sega_params.momentum_scale = momentum_scale
                         sega_params.momentum_beta = momentum_beta
-                        sega_params.strength = 1.0 # FIXME: Use appropriate guidance strength
+                        sega_params.strength = strength
                         concepts_sega_params.append(sega_params)
 
-                for concept in concept_conds_neg:
-                        sega_params = SegaStateParams()
-                        sega_params.warmup_period = warmup
-                        sega_params.edit_guidance_scale = edit_guidance_scale
-                        sega_params.tail_percentage_threshold = tail_percentage_threshold
-                        sega_params.momentum_scale = momentum_scale
-                        sega_params.momentum_beta = momentum_beta
-                        sega_params.strength = -1.0 # FIXME: Use appropriate guidance strength
-                        concepts_sega_params.append(sega_params)
+                #for concept, strength in concept_conds_neg:
+                #        sega_params = SegaStateParams()
+                #        sega_params.warmup_period = warmup
+                #        sega_params.edit_guidance_scale = edit_guidance_scale
+                #        sega_params.tail_percentage_threshold = tail_percentage_threshold
+                #        sega_params.momentum_scale = momentum_scale
+                #        sega_params.momentum_beta = momentum_beta
+                #        sega_params.strength = strength
+                #        concepts_sega_params.append(sega_params)
                 
                 # append negative conds to end
-                concept_conds.extend(concept_conds_neg)
+                #concept_conds.extend(concept_conds_neg)
 
                 y = lambda params: self.on_cfg_denoiser_callback(params, concept_conds, concepts_sega_params)
 
@@ -204,7 +212,7 @@ class SegaExtensionScript(scripts.Script):
                 logger.debug('Unhooked callbacks')
                 script_callbacks.remove_current_script_callbacks()
         
-        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, neg_text_ps, sega_params: list[SegaStateParams]):
+        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, concept_conds, sega_params: list[SegaStateParams]):
                 # run routine for each concept
                 # TODO: figure out a way to batch this
                 # TODO: add option to opt out of batching for performance
@@ -213,6 +221,10 @@ class SegaExtensionScript(scripts.Script):
                 padded_cond_uncond = False
                 text_cond = params.text_cond
                 text_uncond = params.text_uncond
+
+                # pad text_cond or text_uncond to match the length of the longest prompt
+                # i would prefer to let sd_samplers_cfg_denoiser.py handle the padding, but 
+                # there isn't a callback that returns the padded conds
                 if text_cond.shape[1] != text_uncond.shape[1]:
                         empty = shared.sd_model.cond_stage_model_empty_prompt
                         num_repeats = (text_cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
@@ -228,7 +240,8 @@ class SegaExtensionScript(scripts.Script):
                 batch_tensor = {}
 
                 for i, sega_param in enumerate(sega_params):
-                        conds_list, tensor_dict = reconstruct_multicond_batch(neg_text_ps[i], sampling_step)
+                        concept_cond, _ = concept_conds[i]
+                        conds_list, tensor_dict = reconstruct_multicond_batch(concept_cond, sampling_step)
                         # initialize here because we don't know the shape/dtype of the tensor until we reconstruct it
                         for key, tensor in tensor_dict.items():
                                 if tensor.shape[1] != text_uncond[key].shape[1]:
@@ -262,35 +275,16 @@ class SegaExtensionScript(scripts.Script):
 
                 skip_uncond = False
                 is_edit_model = False # FIXME: length of conds_list / AND prompts
-
-                # modules/sd_samplers_cfg_denoiser.py CFGDenoiser.forward
-
-                # batch_tensor already has the reconstructed conds [num_concepts, ...]
-                #conds_list, tensor = reconstruct_multicond_batch(batch_tensor, sampling_step)
-                #num_concepts = batch_tensor.shape[0]
-
                 padded_cond_uncond = False
-
-                # pad text_cond or text_uncond to match the length of the longest prompt
-                # i would prefer to let sd_samplers_cfg_denoiser.py handle the padding, but 
-                # there isn't a callback that returns the padded conds
-                # if text_cond.shape[1] != text_uncond.shape[1]:
-                #         empty = shared.sd_model.cond_stage_model_empty_prompt
-                #         num_repeats = (text_cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
-
-                #         if num_repeats < 0:
-                #                 text_cond = pad_cond(text_cond, -num_repeats, empty)
-                #                 padded_cond_uncond = True
-                #         elif num_repeats > 0:
-                #                 text_uncond = pad_cond(text_uncond, num_repeats, empty)
-                #                 padded_cond_uncond = True
 
                 # Semantic Guidance
 
+                # for dim = 4, new_shape will be (-1, 1, 1, 1), for dim=3, new_shape will be (-1, 1, 1), etc.
+                make_tuple_dim = lambda dim: (-1,) + (1,) * (dim - 1)
+
                 edit_dir_dict = {}
 
-                # edit_guidance_scale = torch.Tensor([params.edit_guidance_scale for params in sega_params])
-
+                # batch_tensor: [num_concepts, batch_size, tokens(77, 154, etc.), 2048]
                 # Calculate edit direction
                 for key, concept_cond in batch_tensor.items():
                         new_shape = (-1,) + (1,) * (concept_cond.dim() - 1)
@@ -356,118 +350,4 @@ class SegaExtensionScript(scripts.Script):
 
                                 # update velocity
                                 sega_param.v[key] = v_t_1
-
-        # TODO: positive / negative
-        # actually, we can just call batch routine iteratively for each concept instead of having a whole separate routine
-        def sega_routine(self, params: CFGDenoiserParams, neg_text_ps, sega_params: SegaStateParams):
-                total_sampling_steps = params.total_sampling_steps
-                warmup_period = sega_params.warmup_period
-                edit_guidance_scale = sega_params.edit_guidance_scale
-                tail_percentage_threshold = sega_params.tail_percentage_threshold
-                momentum_scale = sega_params.momentum_scale
-                momentum_beta = sega_params.momentum_beta
-
-                x = params.x
-                sampling_step = params.sampling_step
-                text_cond = params.text_cond
-                text_uncond = params.text_uncond
-
-                skip_uncond = False
-                is_edit_model = False # FIXME: length of conds_list / AND prompts
-
-                # modules/sd_samplers_cfg_denoiser.py CFGDenoiser.forward
-                conds_list, tensor = reconstruct_multicond_batch(neg_text_ps, sampling_step)
-
-                padded_cond_uncond = False
-
-                # pad text_cond or text_uncond to match the length of the longest prompt
-                # i would prefer to let sd_samplers_cfg_denoiser.py handle the padding, but 
-                # there isn't a callback that returns the padded conds
-                if text_cond.shape[1] != text_uncond.shape[1]:
-                        empty = shared.sd_model.cond_stage_model_empty_prompt
-                        num_repeats = (text_cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
-
-                        if num_repeats < 0:
-                                text_cond = pad_cond(text_cond, -num_repeats, empty)
-                                padded_cond_uncond = True
-                        elif num_repeats > 0:
-                                text_uncond = pad_cond(text_uncond, num_repeats, empty)
-                                padded_cond_uncond = True
-
-                # Semantic Guidance
-
-                # each element is (conds_list, tensor)
-                #conds_list_tensor = []
-                #for concept in neg_text_ps:
-                #        conds_list_c, tensor_c = reconstruct_multicond_batch(concept, sampling_step)
-                #        conds_list_tensor.append((conds_list_c, tensor_c))
-
-                edit_dir_dict = {}
-
-                # Calculate edit direction
-                for key, cond in tensor.items():
-
-                        if cond.shape[1] != text_uncond[key].shape[1]:
-                                empty = shared.sd_model.cond_stage_model_empty_prompt
-                                num_repeats = (cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
-
-                                if num_repeats < 0:
-                                        cond = pad_cond(cond, -num_repeats, empty)
-                                        #cond = pad_cond(cond, -num_repeats, cond)
-#                                        self.padded_cond_uncond = True
-                                #elif num_repeats > 0:
-                                #        uncond = pad_cond(uncond, num_repeats, empty)
-#                                        self.padded_cond_uncond = True
-                        if key not in edit_dir_dict.keys():
-                                edit_dir_dict[key] = torch.zeros_like(cond, dtype=cond.dtype, device=cond.device)
-
-                        # filter out values in-between tails
-                        cond_mean, cond_std = torch.mean(cond).item(), torch.std(cond).item()
-
-                        # this slice is probably wrong
-                        edit_dir = cond - text_uncond[key]
-
-                        # z-scores for tails
-                        upper_z = stats.norm.ppf(1.0 - tail_percentage_threshold)
-
-                        # numerical thresholds
-                        upper_threshold = cond_mean + (upper_z * cond_std)
-
-                        # zero out values in-between tails
-                        # elementwise multiplication between scale tensor and edit direction
-                        zero_tensor = torch.zeros_like(cond, dtype=cond.dtype, device=cond.device)
-                        scale_tensor = torch.ones_like(cond, dtype=cond.dtype, device=cond.device) * edit_guidance_scale
-                        edit_dir_abs = edit_dir.abs()
-                        scale_tensor = torch.where((edit_dir_abs > upper_threshold), scale_tensor, zero_tensor)
-
-                        # update edit direction with the edit dir for this concept
-                        guidance_strength = 0.0 if sampling_step < warmup_period else 1.0 # FIXME: Use appropriate guidance strength
-                        edit_dir = torch.mul(scale_tensor, edit_dir)
-                        edit_dir_dict[key] = edit_dir_dict[key] + guidance_strength * edit_dir
-
-                for key, dir in edit_dir_dict.items():
-                        # calculate momentum scale and velocity
-                        if key not in sega_params.v.keys():
-                                sega_params.v[key] = torch.zeros_like(dir, dtype=dir.dtype, device=dir.device)
-
-                        # add to text condition
-                        v_t = sega_params.v[key]
-                        dir = dir + torch.mul(momentum_scale, v_t)
-
-                        # calculate v_t+1 and update state
-                        v_t_1 = momentum_beta * ((1 - momentum_beta) * v_t) * dir
-
-                        # add to cond after warmup elapsed
-                        if sampling_step >= warmup_period:
-                                text_cond[key] = text_cond[key] + dir
-
-                        # update velocity
-                        sega_params.v[key] = v_t_1
-
         
-        def calc_velocity(self, sampling_step, warmup_period, velocity_scale, v_t, v_0, last_eg):
-                if sampling_step < warmup_period:
-                        v_t = v_0
-                # calculate semantic guidance term
-                velocity = velocity_scale*v_t + (1-velocity_scale)*last_eg
-                return velocity
