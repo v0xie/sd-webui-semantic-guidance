@@ -81,7 +81,7 @@ class SegaExtensionScript(scripts.Script):
                 momentum_scale.do_not_save_to_config = True
                 momentum_beta.do_not_save_to_config = True
                 self.infotext_fields = [
-                        (active, 'SEGA Active'),
+                        (active, lambda d: gr.Checkbox.update(value='SEGA Active' in d)),
                         (prompt, 'SEGA Prompt'),
                         (neg_prompt, 'SEGA Negative Prompt'),
                         (warmup, 'SEGA Warmup Period'),
@@ -318,3 +318,43 @@ class SegaExtensionScript(scripts.Script):
 
                                 # update velocity
                                 sega_param.v[key] = v_t_1
+
+# XYZ Plot
+# Based on @mcmonkey4eva's XYZ Plot implementation here: https://github.com/mcmonkeyprojects/sd-dynamic-thresholding/blob/master/scripts/dynamic_thresholding.py
+def sega_apply_override(field, boolean: bool = False):
+    def fun(p, x, xs):
+        if boolean:
+            x = True if x.lower() == "true" else False
+        setattr(p, field, x)
+    return fun
+
+def sega_apply_field(field):
+    def fun(p, x, xs):
+        if not hasattr(p, "sega_active"):
+                setattr(p, "sega_active", True)
+        setattr(p, field, x)
+
+    return fun
+
+def make_axis_options():
+        xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ == "xyz_grid.py"][0].module
+        extra_axis_options = {
+                xyz_grid.AxisOption("[Semantic Guidance] Active", str, sega_apply_override('sega_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
+                xyz_grid.AxisOption("[Semantic Guidance] Prompt", str, sega_apply_field("sega_prompt")),
+                xyz_grid.AxisOption("[Semantic Guidance] Negative Prompt", str, sega_apply_field("sega_neg_prompt")),
+                xyz_grid.AxisOption("[Semantic Guidance] Warmup Steps", int, sega_apply_field("sega_warmup")),
+                xyz_grid.AxisOption("[Semantic Guidance] Guidance Scale", float, sega_apply_field("sega_edit_guidance_scale")),
+                xyz_grid.AxisOption("[Semantic Guidance] Tail Percentage Threshold", float, sega_apply_field("sega_tail_percentage_threshold")),
+                xyz_grid.AxisOption("[Semantic Guidance] Momentum Scale", float, sega_apply_field("sega_momentum_scale")),
+                xyz_grid.AxisOption("[Semantic Guidance] Momentum Beta", float, sega_apply_field("sega_momentum_beta")),
+        }
+        if not any("[Semantic Guidance]" in x.label for x in xyz_grid.axis_options):
+                xyz_grid.axis_options.extend(extra_axis_options)
+
+def callback_before_ui():
+        try:
+                make_axis_options()
+        except:
+                logger.exception("Semantic Guidance: Error while making axis options")
+
+script_callbacks.on_before_ui(callback_before_ui)
