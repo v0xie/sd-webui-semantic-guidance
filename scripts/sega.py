@@ -215,9 +215,20 @@ class SegaExtensionScript(scripts.Script):
                 batch_conds_list = []
                 batch_tensor = {}
 
+                # sd 1.5 support
+                if isinstance(text_cond, torch.Tensor):
+                        text_cond = {'crossattn': text_cond}
+                if isinstance(text_uncond, torch.Tensor):
+                        text_uncond = {'crossattn': text_uncond}
+
                 for i, _ in enumerate(sega_params):
                         concept_cond, _ = concept_conds[i]
                         conds_list, tensor_dict = reconstruct_multicond_batch(concept_cond, sampling_step)
+
+                        # sd 1.5 support
+                        if isinstance(tensor_dict, torch.Tensor):
+                                tensor_dict = {'crossattn': tensor_dict}
+
                         # initialize here because we don't know the shape/dtype of the tensor until we reconstruct it
                         for key, tensor in tensor_dict.items():
                                 if tensor.shape[1] != text_uncond[key].shape[1]:
@@ -231,9 +242,15 @@ class SegaExtensionScript(scripts.Script):
                                 else:
                                         batch_tensor[key] = torch.cat((batch_tensor[key], tensor), dim=0)
                         batch_conds_list.append(conds_list)
-                self.sega_routine_batch(params, batch_conds_list, batch_tensor, sega_params)
+                self.sega_routine_batch(params, batch_conds_list, batch_tensor, sega_params, text_cond, text_uncond)
+        
+        def make_tuple_dim(self, dim):
+                # sd 1.5 support
+                if isinstance(dim, torch.Tensor):
+                        dim = dim.dim()
+                return (-1,) + (1,) * (dim - 1)
 
-        def sega_routine_batch(self, params: CFGDenoiserParams, batch_conds_list, batch_tensor, sega_params: list[SegaStateParams]):
+        def sega_routine_batch(self, params: CFGDenoiserParams, batch_conds_list, batch_tensor, sega_params: list[SegaStateParams], text_cond, text_uncond):
                 # FIXME: these parameters should be specific to each concept
                 warmup_period = sega_params[0].warmup_period
                 edit_guidance_scale = sega_params[0].edit_guidance_scale
@@ -242,11 +259,6 @@ class SegaExtensionScript(scripts.Script):
                 momentum_beta = sega_params[0].momentum_beta
 
                 sampling_step = params.sampling_step
-                text_cond = params.text_cond
-                text_uncond = params.text_uncond
-
-                # for dim = 4, new_shape will be (-1, 1, 1, 1), for dim=3, new_shape will be (-1, 1, 1), etc.
-                make_tuple_dim = lambda dim: (-1,) + (1,) * (dim - 1)
 
                 # Semantic Guidance
                 edit_dir_dict = {}
@@ -254,8 +266,7 @@ class SegaExtensionScript(scripts.Script):
                 # batch_tensor: [num_concepts, batch_size, tokens(77, 154, etc.), 2048]
                 # Calculate edit direction
                 for key, concept_cond in batch_tensor.items():
-                        #new_shape = (-1,) + (1,) * (concept_cond.dim() - 1)
-                        new_shape = make_tuple_dim(concept_cond.dim())
+                        new_shape = self.make_tuple_dim(concept_cond)
                         strength = torch.Tensor([params.strength for params in sega_params]).to(dtype=concept_cond.dtype, device=concept_cond.device)
                         strength = strength.view(new_shape)
 
@@ -282,7 +293,7 @@ class SegaExtensionScript(scripts.Script):
 
                         # reshape to be able to broadcast / use torch.where to filter out values for each concept
                         #new_shape = (-1,) + (1,) * (concept_cond.dim() - 1)
-                        new_shape = make_tuple_dim(concept_cond.dim())
+                        new_shape = self.make_tuple_dim(concept_cond)
                         upper_threshold_reshaped = upper_threshold.view(new_shape)
 
                         # zero out values in-between tails
@@ -313,8 +324,12 @@ class SegaExtensionScript(scripts.Script):
                                 v_t_1 = momentum_beta * ((1 - momentum_beta) * v_t) * dir[i]
 
                                 # add to cond after warmup elapsed
+                                # for sd 1.5, we must add to the original params.text_cond because we reassigned text_cond
                                 if sampling_step >= warmup_period:
-                                        text_cond[key] = text_cond[key] + dir[i]
+                                        if isinstance(params.text_cond, dict):
+                                                params.text_cond[key] = params.text_cond[key] + dir[i]
+                                        else:
+                                                params.text_cond = params.text_cond + dir[i]
 
                                 # update velocity
                                 sega_param.v[key] = v_t_1
