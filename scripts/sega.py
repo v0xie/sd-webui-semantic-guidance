@@ -2,18 +2,14 @@ import logging
 from os import environ
 import modules.scripts as scripts
 import gradio as gr
-import numpy as np
-from collections import OrderedDict
-from typing import Union
 import scipy.stats as stats
 
-from modules import script_callbacks, rng, prompt_parser
-from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, AfterCFGCallbackParams
-from modules.prompt_parser import get_multicond_learned_conditioning, get_multicond_prompt_list, get_learned_conditioning_prompt_schedules, get_learned_conditioning, reconstruct_cond_batch, reconstruct_multicond_batch, reconstruct_cond_batch
+from modules import script_callbacks, prompt_parser
+from modules.script_callbacks import CFGDenoiserParams
+from modules.prompt_parser import reconstruct_multicond_batch
 from modules.processing import StableDiffusionProcessing
 #from modules.shared import sd_model, opts
-from modules.sd_samplers_cfg_denoiser import pad_cond, subscript_cond, catenate_conds
-from modules.sd_models import get_empty_cond
+from modules.sd_samplers_cfg_denoiser import pad_cond
 from modules import shared
 
 import torch
@@ -26,7 +22,7 @@ logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 An unofficial implementation of SEGA: Instructing Text-to-Image Models using Semantic Guidance for Automatic1111 WebUI
 
 @misc{brack2023sega,
-      title={SEGA: Instructing Text-to-Image Models using Semantic Guidance}, 
+      title={SEGA: Instructing Text-to-Image Models using Semantic Guidance},
       author={Manuel Brack and Felix Friedrich and Dominik Hintersdorf and Lukas Struppek and Patrick Schramowski and Kristian Kersting},
       year={2023},
       eprint={2301.12247},
@@ -70,7 +66,6 @@ class SegaExtensionScript(scripts.Script):
                                 prompt = gr.Textbox(lines=2, label="Prompt", elem_id = 'sega_prompt', info="Prompt goes here'", elem_classes=["prompt"])
                         with gr.Row():
                                 neg_prompt = gr.Textbox(lines=2, label="Negative Prompt", elem_id = 'sega_neg_prompt', info="Negative Prompt goes here'", elem_classes=["prompt"])
-
                         with gr.Row():
                                 warmup = gr.Slider(value = 5, minimum = 0, maximum = 100, step = 1, label="Warmup Period", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 5")
                                 edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 10.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
@@ -130,8 +125,6 @@ class SegaExtensionScript(scripts.Script):
                         "SEGA Momentum Beta": momentum_beta,
                 }
 
-                concept_conds = []
-                concept_conds_neg = []
                 # separate concepts by comma
                 concept_prompts = self.parse_concept_prompt(prompt)
                 concept_prompts_neg = self.parse_concept_prompt(neg_prompt)
@@ -141,25 +134,19 @@ class SegaExtensionScript(scripts.Script):
                 concept_prompts_neg = [[concept, -strength] for concept, strength in concept_prompts_neg]
                 concept_prompts.extend(concept_prompts_neg)
 
+                concept_conds = []
                 for concept, strength in concept_prompts:
                         prompt_list = [concept] * p.batch_size
                         prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
                         c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
                         concept_conds.append([c, strength])
-                #for concept, strength in concept_prompts_neg:
-                #        prompt_list = [concept] * p.batch_size
-                #        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                #        c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
-                #        concept_conds_neg.append([c, -strength])
-                #prompt_list = [neg_text] * p.batch_size
-                #prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                #c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
+
                 self.create_hook(p, active, concept_conds, None, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta)
-        
+
         def parse_concept_prompt(self, prompt:str) -> list[str]:
-                """ 
+                """
                 Separate prompt by comma into a list of concepts
-                TODO: parse prompt into a list of concepts using A1111 functions 
+                TODO: parse prompt into a list of concepts using A1111 functions
                 >>> g = lambda prompt: self.parse_concept_prompt(prompt)
                 >>> g("apples")
                 ['apples']
@@ -167,13 +154,11 @@ class SegaExtensionScript(scripts.Script):
                 ['apple', 'banana', 'carrot']
                 """
                 return [x.strip() for x in prompt.split(",")]
-        
-        def create_hook(self, p, active, concept_conds, concept_conds_neg, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
-                # Use lambda to call the callback function with the parameters to avoid global variables
 
+        def create_hook(self, p, active, concept_conds, concept_conds_neg, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
                 # Create a list of parameters for each concept
                 concepts_sega_params = []
-                for concept, strength in concept_conds:
+                for _, strength in concept_conds:
                         sega_params = SegaStateParams()
                         sega_params.warmup_period = warmup
                         sega_params.edit_guidance_scale = edit_guidance_scale
@@ -183,19 +168,7 @@ class SegaExtensionScript(scripts.Script):
                         sega_params.strength = strength
                         concepts_sega_params.append(sega_params)
 
-                #for concept, strength in concept_conds_neg:
-                #        sega_params = SegaStateParams()
-                #        sega_params.warmup_period = warmup
-                #        sega_params.edit_guidance_scale = edit_guidance_scale
-                #        sega_params.tail_percentage_threshold = tail_percentage_threshold
-                #        sega_params.momentum_scale = momentum_scale
-                #        sega_params.momentum_beta = momentum_beta
-                #        sega_params.strength = strength
-                #        concepts_sega_params.append(sega_params)
-                
-                # append negative conds to end
-                #concept_conds.extend(concept_conds_neg)
-
+                # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, concept_conds, concepts_sega_params)
 
                 logger.debug('Hooked callbacks')
@@ -211,19 +184,15 @@ class SegaExtensionScript(scripts.Script):
         def unhook_callbacks(self):
                 logger.debug('Unhooked callbacks')
                 script_callbacks.remove_current_script_callbacks()
-        
+
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, concept_conds, sega_params: list[SegaStateParams]):
-                # run routine for each concept
-                # TODO: figure out a way to batch this
                 # TODO: add option to opt out of batching for performance
                 sampling_step = params.sampling_step
-
-                padded_cond_uncond = False
                 text_cond = params.text_cond
                 text_uncond = params.text_uncond
 
                 # pad text_cond or text_uncond to match the length of the longest prompt
-                # i would prefer to let sd_samplers_cfg_denoiser.py handle the padding, but 
+                # i would prefer to let sd_samplers_cfg_denoiser.py handle the padding, but
                 # there isn't a callback that returns the padded conds
                 if text_cond.shape[1] != text_uncond.shape[1]:
                         empty = shared.sd_model.cond_stage_model_empty_prompt
@@ -231,15 +200,13 @@ class SegaExtensionScript(scripts.Script):
 
                         if num_repeats < 0:
                                 text_cond = pad_cond(text_cond, -num_repeats, empty)
-                                padded_cond_uncond = True
                         elif num_repeats > 0:
                                 text_uncond = pad_cond(text_uncond, num_repeats, empty)
-                                padded_cond_uncond = True
 
                 batch_conds_list = []
                 batch_tensor = {}
 
-                for i, sega_param in enumerate(sega_params):
+                for i, _ in enumerate(sega_params):
                         concept_cond, _ = concept_conds[i]
                         conds_list, tensor_dict = reconstruct_multicond_batch(concept_cond, sampling_step)
                         # initialize here because we don't know the shape/dtype of the tensor until we reconstruct it
@@ -258,36 +225,28 @@ class SegaExtensionScript(scripts.Script):
                 self.sega_routine_batch(params, batch_conds_list, batch_tensor, sega_params)
 
         def sega_routine_batch(self, params: CFGDenoiserParams, batch_conds_list, batch_tensor, sega_params: list[SegaStateParams]):
-                total_sampling_steps = params.total_sampling_steps
-
-                # this should be per params
-                #warmup_period = max(round(total_sampling_steps * sega_params[0].warmup_period), 0)
+                # FIXME: these parameters should be specific to each concept
                 warmup_period = sega_params[0].warmup_period
                 edit_guidance_scale = sega_params[0].edit_guidance_scale
                 tail_percentage_threshold = sega_params[0].tail_percentage_threshold
                 momentum_scale = sega_params[0].momentum_scale
                 momentum_beta = sega_params[0].momentum_beta
 
-                x = params.x
                 sampling_step = params.sampling_step
                 text_cond = params.text_cond
                 text_uncond = params.text_uncond
 
-                skip_uncond = False
-                is_edit_model = False # FIXME: length of conds_list / AND prompts
-                padded_cond_uncond = False
-
-                # Semantic Guidance
-
                 # for dim = 4, new_shape will be (-1, 1, 1, 1), for dim=3, new_shape will be (-1, 1, 1), etc.
                 make_tuple_dim = lambda dim: (-1,) + (1,) * (dim - 1)
 
+                # Semantic Guidance
                 edit_dir_dict = {}
 
                 # batch_tensor: [num_concepts, batch_size, tokens(77, 154, etc.), 2048]
                 # Calculate edit direction
                 for key, concept_cond in batch_tensor.items():
-                        new_shape = (-1,) + (1,) * (concept_cond.dim() - 1)
+                        #new_shape = (-1,) + (1,) * (concept_cond.dim() - 1)
+                        new_shape = make_tuple_dim(concept_cond.dim())
                         strength = torch.Tensor([params.strength for params in sega_params]).to(dtype=concept_cond.dtype, device=concept_cond.device)
                         strength = strength.view(new_shape)
 
@@ -311,10 +270,10 @@ class SegaExtensionScript(scripts.Script):
                         # numerical thresholds
                         # FIXME: does this take into account image batch size?, i.e. dim 1
                         upper_threshold = cond_mean + (upper_z * cond_std)
-                        
+
                         # reshape to be able to broadcast / use torch.where to filter out values for each concept
-                        # for dim = 4, new_shape will be (-1, 1, 1, 1), for dim=3, new_shape will be (-1, 1, 1), etc.
-                        new_shape = (-1,) + (1,) * (concept_cond.dim() - 1)
+                        #new_shape = (-1,) + (1,) * (concept_cond.dim() - 1)
+                        new_shape = make_tuple_dim(concept_cond.dim())
                         upper_threshold_reshaped = upper_threshold.view(new_shape)
 
                         # zero out values in-between tails
@@ -350,4 +309,3 @@ class SegaExtensionScript(scripts.Script):
 
                                 # update velocity
                                 sega_param.v[key] = v_t_1
-        
