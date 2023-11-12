@@ -131,18 +131,23 @@ class SegaExtensionScript(scripts.Script):
 
                 concept_conds = []
                 concept_conds_neg = []
+                # separate concepts by comma
                 concept_prompts = self.parse_concept_prompt(prompt)
                 concept_prompts_neg = self.parse_concept_prompt(neg_prompt)
-                for concept in concept_prompts:
+                # [[concept_1,  strength_1], ...]
+                concept_prompts = [prompt_parser.parse_prompt_attention(concept)[0] for concept in concept_prompts]
+                concept_prompts_neg = [prompt_parser.parse_prompt_attention(neg_concept)[0] for neg_concept in concept_prompts_neg]
+
+                for concept, strength in concept_prompts:
                         prompt_list = [concept] * p.batch_size
                         prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
                         c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
-                        concept_conds.append(c)
-                for concept in concept_prompts_neg:
+                        concept_conds.append([c, strength])
+                for concept, strength in concept_prompts_neg:
                         prompt_list = [concept] * p.batch_size
                         prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
                         c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
-                        concept_conds_neg.append(c)
+                        concept_conds_neg.append([c, -strength])
                 #prompt_list = [neg_text] * p.batch_size
                 #prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
                 #c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
@@ -165,24 +170,24 @@ class SegaExtensionScript(scripts.Script):
 
                 # Create a list of parameters for each concept
                 concepts_sega_params = []
-                for concept in concept_conds:
+                for concept, strength in concept_conds:
                         sega_params = SegaStateParams()
                         sega_params.warmup_period = warmup
                         sega_params.edit_guidance_scale = edit_guidance_scale
                         sega_params.tail_percentage_threshold = tail_percentage_threshold
                         sega_params.momentum_scale = momentum_scale
                         sega_params.momentum_beta = momentum_beta
-                        sega_params.strength = 1.0 # FIXME: Use appropriate guidance strength
+                        sega_params.strength = strength
                         concepts_sega_params.append(sega_params)
 
-                for concept in concept_conds_neg:
+                for concept, strength in concept_conds_neg:
                         sega_params = SegaStateParams()
                         sega_params.warmup_period = warmup
                         sega_params.edit_guidance_scale = edit_guidance_scale
                         sega_params.tail_percentage_threshold = tail_percentage_threshold
                         sega_params.momentum_scale = momentum_scale
                         sega_params.momentum_beta = momentum_beta
-                        sega_params.strength = -1.0 # FIXME: Use appropriate guidance strength
+                        sega_params.strength = strength
                         concepts_sega_params.append(sega_params)
                 
                 # append negative conds to end
@@ -232,7 +237,8 @@ class SegaExtensionScript(scripts.Script):
                 batch_tensor = {}
 
                 for i, sega_param in enumerate(sega_params):
-                        conds_list, tensor_dict = reconstruct_multicond_batch(neg_text_ps[i], sampling_step)
+                        concept_cond, _ = neg_text_ps[i]
+                        conds_list, tensor_dict = reconstruct_multicond_batch(concept_cond, sampling_step)
                         # initialize here because we don't know the shape/dtype of the tensor until we reconstruct it
                         for key, tensor in tensor_dict.items():
                                 if tensor.shape[1] != text_uncond[key].shape[1]:
