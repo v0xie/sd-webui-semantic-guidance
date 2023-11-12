@@ -27,7 +27,7 @@ Please see the bottom of the page for more examples.
 - [x] Support A1111 prompt attention syntax and shortcuts for attention strength
 - [x] Support restoring parameter values from infotext (Send to Txt2Img, Send to Img2Img, etc.)
 - [x] XYZ plot support
-- [ ] SD 1.5 support (untested)
+- [x] SD 1.5 support (untested)
 - [ ] Support semantic guidance prompt in regular Positive/Negative Prompt fields
 
 ### Credits
