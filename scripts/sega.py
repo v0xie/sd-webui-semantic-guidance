@@ -106,14 +106,19 @@ class SegaExtensionScript(scripts.Script):
                 active = getattr(p, "sega_active", active)
                 if active is False:
                         return
-                # FIXME: must have some prompt
                 prompt = getattr(p, "sega_prompt", prompt)
-                #neg_prompt = getattr(p, "sega_neg_prompt", neg_prompt)
+                neg_prompt = getattr(p, "sega_neg_prompt", neg_prompt)
+                warmup = getattr(p, "sega_warmup", warmup)
+                edit_guidance_scale = getattr(p, "sega_edit_guidance_scale", edit_guidance_scale)
+                tail_percentage_threshold = getattr(p, "sega_tail_percentage_threshold", tail_percentage_threshold)
+                momentum_scale = getattr(p, "sega_momentum_scale", momentum_scale)
+                momentum_beta = getattr(p, "sega_momentum_beta", momentum_beta)
+                # FIXME: must have some prompt
                 #if prompt is None:
                 #        return
                 #if len(prompt) == 0:
                 #        return
-                steps = p.steps
+
                 p.extra_generation_params = {
                         "SEGA Active": active,
                         "SEGA Prompt": prompt,
@@ -138,7 +143,7 @@ class SegaExtensionScript(scripts.Script):
                 for concept, strength in concept_prompts:
                         prompt_list = [concept] * p.batch_size
                         prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                        c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, steps, [self.cached_c], p.extra_network_data)
+                        c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, [self.cached_c], p.extra_network_data)
                         concept_conds.append([c, strength])
 
                 self.create_hook(p, active, concept_conds, None, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta)
