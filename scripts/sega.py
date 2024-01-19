@@ -118,8 +118,7 @@ class SegaExtensionScript(scripts.Script):
                 #        return
                 #if len(prompt) == 0:
                 #        return
-
-                p.extra_generation_params = {
+                p.extra_generation_params.update({
                         "SEGA Active": active,
                         "SEGA Prompt": prompt,
                         "SEGA Negative Prompt": neg_prompt,
@@ -128,7 +127,7 @@ class SegaExtensionScript(scripts.Script):
                         "SEGA Tail Percentage Threshold": tail_percentage_threshold,
                         "SEGA Momentum Scale": momentum_scale,
                         "SEGA Momentum Beta": momentum_beta,
-                }
+                })
 
                 # separate concepts by comma
                 concept_prompts = self.parse_concept_prompt(prompt)
