@@ -232,7 +232,12 @@ class SegaExtensionScript(scripts.Script):
                         for key, tensor in tensor_dict.items():
                                 if tensor.shape[1] != text_uncond[key].shape[1]:
                                         empty = shared.sd_model.cond_stage_model_empty_prompt
-                                        num_repeats = (tensor.shape[1] - text_uncond.shape[1]) // empty.shape[1]
+                                        # sd 1.5
+                                        if key == "crossattn":
+                                                num_repeats = (tensor.shape[1] - text_uncond[key].shape[1]) // empty.shape[1]
+                                        # sdxl
+                                        else:
+                                                num_repeats = (tensor.shape[1] - text_uncond.shape[1]) // empty.shape[1]
                                         if num_repeats < 0:
                                                 tensor = pad_cond(tensor, -num_repeats, empty)
                                 tensor = tensor.unsqueeze(0)
