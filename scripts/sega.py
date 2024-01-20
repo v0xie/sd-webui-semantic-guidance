@@ -194,14 +194,14 @@ class SegaExtensionScript(scripts.Script):
                 logger.debug('Unhooked callbacks')
                 script_callbacks.remove_current_script_callbacks()
 
-        def correction_by_similarities(self, f, C, tau, gamma, alpha):
+        def correction_by_similarities(self, f, C, percentile, gamma, alpha):
                 """
                 Apply the Correction by Similarities algorithm on embeddings.
 
                 Args:
                 f (Tensor): The embedding tensor of shape (n, d).
                 C (list): Indices of selected tokens.
-                tau (float): Score threshold.
+                percentile (float): Percentile to use for score threshold.
                 gamma (int): Window size for the windowing function.
                 alpha (float): Correction strength.
 
@@ -220,8 +220,9 @@ class SegaExtensionScript(scripts.Script):
                         window[start:end] = 1
                         return window
 
-                for c in C:
+                for token_idx, c in enumerate(C):
                         Sc = f[c] * f  # Element-wise multiplication
+                        tau = torch.quantile(Sc, percentile)
                         Sc_tilde = Sc * (Sc > tau)  # Apply threshold and filter
                         Sc_tilde /= Sc_tilde.max()  # Normalize
                         window = psi(c, gamma, n, Sc_tilde.dtype, Sc_tilde.device).unsqueeze(1)  # Apply windowing function
@@ -234,8 +235,15 @@ class SegaExtensionScript(scripts.Script):
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, concept_conds, sega_params: list[SegaStateParams]):
                 # TODO: add option to opt out of batching for performance
                 sampling_step = params.sampling_step
-                text_cond = params.text_cond
-                text_uncond = params.text_uncond
+
+                # SDXL
+                if isinstance(params.text_cond, dict):
+                        text_cond = params.text_cond['crossattn']
+                        text_uncond = params.text_uncond['crossattn']
+                # SD 1.5
+                else:
+                        text_cond = params.text_cond
+                        text_uncond = params.text_uncond
 
 
                 # correction by similarities
@@ -253,8 +261,14 @@ class SegaExtensionScript(scripts.Script):
                         window_start_idx = max(0, selected_token_idx - window_size)
                         window_end_idx = min(len(batch)-1, selected_token_idx + window_size)
                         window = list(range(window_start_idx, window_end_idx))
+
                         f_bar = self.correction_by_similarities(batch, window, score_threshold, window_size, correction_strength)
-                        params.text_cond[batch_idx] = f_bar
+
+                        if isinstance(params.text_cond, dict):
+                                params.text_cond['crossattn'][batch_idx] = f_bar
+                        else:
+                                params.text_cond[batch_idx] = f_bar
+
                         # # we want to select a token here, for nwo we do it on everything
                         # selected_token_idx = 0
 
