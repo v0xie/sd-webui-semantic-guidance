@@ -67,11 +67,11 @@ class SegaExtensionScript(scripts.Script):
                         with gr.Row():
                                 neg_prompt = gr.Textbox(lines=2, label="Negative Prompt", elem_id = 'sega_neg_prompt', elem_classes=["prompt"])
                         with gr.Row():
-                                warmup = gr.Slider(value = 10, minimum = 0, maximum = 30, step = 1, label="Warmup Period", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 10")
-                                edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 20.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
+                                warmup = gr.Slider(value = 10, minimum = 0, maximum = 30, step = 1, label="Window Size", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 10")
+                                edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 20.0, step = 0.01, label="Correction Strength", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
                                 tail_percentage_threshold = gr.Slider(value = 0.05, minimum = 0.0, maximum = 1.0, step = 0.01, label="Tail Percentage Threshold", elem_id = 'sega_tail_percentage_threshold', info="The percentage of latents to modify, default 0.05")
-                                momentum_scale = gr.Slider(value = 0.3, minimum = 0.0, maximum = 1.0, step = 0.01, label="Momentum Scale", elem_id = 'sega_momentum_scale', info="Scale of momentum, default 0.3")
-                                momentum_beta = gr.Slider(value = 0.6, minimum = 0.0, maximum = 0.999, step = 0.01, label="Momentum Beta", elem_id = 'sega_momentum_beta', info="Beta for momentum, default 0.6")
+                                momentum_scale = gr.Slider(value = 0.3, minimum = 0.0, maximum = 1.0, step = 0.01, label="Correction Threshold", elem_id = 'sega_momentum_scale', info="Scale of momentum, default 0.3")
+                                momentum_beta = gr.Slider(value = 0.6, minimum = 0.0, maximum = 0.999, step = 0.01, label="Correction Strength", elem_id = 'sega_momentum_beta', info="Beta for momentum, default 0.6")
                 active.do_not_save_to_config = True
                 prompt.do_not_save_to_config = True
                 neg_prompt.do_not_save_to_config = True
@@ -166,15 +166,16 @@ class SegaExtensionScript(scripts.Script):
         def create_hook(self, p, active, concept_conds, concept_conds_neg, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
                 # Create a list of parameters for each concept
                 concepts_sega_params = []
-                for _, strength in concept_conds:
-                        sega_params = SegaStateParams()
-                        sega_params.warmup_period = warmup
-                        sega_params.edit_guidance_scale = edit_guidance_scale
-                        sega_params.tail_percentage_threshold = tail_percentage_threshold
-                        sega_params.momentum_scale = momentum_scale
-                        sega_params.momentum_beta = momentum_beta
-                        sega_params.strength = strength
-                        concepts_sega_params.append(sega_params)
+
+                #for _, strength in concept_conds:
+                sega_params = SegaStateParams()
+                sega_params.warmup_period = warmup
+                sega_params.edit_guidance_scale = edit_guidance_scale
+                sega_params.tail_percentage_threshold = tail_percentage_threshold
+                sega_params.momentum_scale = momentum_scale
+                sega_params.momentum_beta = momentum_beta
+                sega_params.strength = 1.0
+                concepts_sega_params.append(sega_params)
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, concept_conds, concepts_sega_params)
@@ -193,7 +194,7 @@ class SegaExtensionScript(scripts.Script):
                 logger.debug('Unhooked callbacks')
                 script_callbacks.remove_current_script_callbacks()
 
-        def correction_by_similarities(f, C, tau, gamma, alpha):
+        def correction_by_similarities(self, f, C, tau, gamma, alpha):
                 """
                 Apply the Correction by Similarities algorithm on embeddings.
 
@@ -212,8 +213,8 @@ class SegaExtensionScript(scripts.Script):
                 f_tilde = f.detach().clone()  # Copy the embedding tensor
 
                 # Define a windowing function
-                def psi(c, gamma, n):
-                        window = torch.zeros(n)
+                def psi(c, gamma, n, dtype, device):
+                        window = torch.zeros(n, dtype=dtype, device=device)
                         start = max(0, c - gamma)
                         end = min(n, c + gamma + 1)
                         window[start:end] = 1
@@ -223,7 +224,7 @@ class SegaExtensionScript(scripts.Script):
                         Sc = f[c] * f  # Element-wise multiplication
                         Sc_tilde = Sc * (Sc > tau)  # Apply threshold and filter
                         Sc_tilde /= Sc_tilde.max()  # Normalize
-                        window = psi(c, gamma, n).unsqueeze(1)  # Apply windowing function
+                        window = psi(c, gamma, n, Sc_tilde.dtype, Sc_tilde.device).unsqueeze(1)  # Apply windowing function
                         Sc_tilde *= window
                         f_c_tilde = torch.sum(Sc_tilde * f, dim=0)  # Combine embeddings
                         f_tilde[c] = (1 - alpha) * f[c] + alpha * f_c_tilde  # Blend embeddings
@@ -236,51 +237,56 @@ class SegaExtensionScript(scripts.Script):
                 text_cond = params.text_cond
                 text_uncond = params.text_uncond
 
+
                 # correction by similarities
                 text_cond_shape = text_cond.shape
                 text_uncond_shape = text_cond.shape
 
-                score_threshold = 0.5
-                correction_strength = 0.5
-                window_size = 10
+                sp = sega_params[0]
+                window_size = sp.warmup_period
+                correction_strength = sp.momentum_beta
+                score_threshold = sp.momentum_scale
 
                 # [batch_size, tokens(77, 154, etc.), 2048]
                 for batch_idx, batch in enumerate(text_cond):
-                        # we want to select a token here, for nwo we do it on everything
                         selected_token_idx = 0
-
                         window_start_idx = max(0, selected_token_idx - window_size)
                         window_end_idx = min(len(batch)-1, selected_token_idx + window_size)
+                        window = list(range(window_start_idx, window_end_idx))
+                        f_bar = self.correction_by_similarities(batch, window, score_threshold, window_size, correction_strength)
+                        params.text_cond[batch_idx] = f_bar
+                        # # we want to select a token here, for nwo we do it on everything
+                        # selected_token_idx = 0
 
-                        f = batch.detach().clone() # original embedding
-                        f_bar = batch.detach().clone() # corrected embedding, copy original batch
 
-                        # slice tokens within window
-                        window = batch[window_start_idx:window_end_idx]
+                        # f = batch.detach().clone() # original embedding
+                        # f_bar = batch.detach().clone() # corrected embedding, copy original batch
 
-                        for token_index, embedding in enumerate(batch):
-                                actual_token_idx = token_index + window_start_idx
+                        # # slice tokens within window
+                        # window = batch[window_start_idx:window_end_idx]
+
+                        # for token_index, embedding in enumerate(batch):
+                        #         actual_token_idx = token_index + window_start_idx
                                 
-                                # line 4
-                                s_c = embedding * f
+                        #         # line 4
+                        #         s_c = embedding * f
 
-                                # line 5 threshold and normalize
-                                mask = s_c < score_threshold
-                                s_c[mask] /= torch.max(s_c)
+                        #         # line 5 threshold and normalize
+                        #         mask = s_c < score_threshold
+                        #         s_c[mask] /= torch.max(s_c)
 
-                                # line 6 windowing is done before this
-                                s_c *= s_c
+                        #         # line 6 windowing is done before this
+                        #         s_c *= s_c
 
-                                # line 7
-                                f_c = f_bar[actual_token_idx]
-                                n = len(batch)
-                                sum_fc = n * (s_c * f) # sum of s_c * f from 1 to n
-                                f_bar[actual_token_idx] = sum_fc[actual_token_idx]
+                        #         # line 7
+                        #         f_c = f_bar[actual_token_idx]
+                        #         n = len(batch)
+                        #         sum_fc = n * (s_c * f) # sum of s_c * f from 1 to n
+                        #         f_bar[actual_token_idx] = sum_fc[actual_token_idx]
 
-                                # line 8
-                                f_bar[actual_token_idx] = (1 - correction_strength) * f_c[actual_token_idx] + correction_strength * sum_fc[actual_token_idx]
+                        #         # line 8
+                        #         f_bar[actual_token_idx] = (1 - correction_strength) * f_c[actual_token_idx] + correction_strength * sum_fc[actual_token_idx]
 
-                params.text_cond[batch_idx] = f_bar
 
 
 
@@ -448,11 +454,11 @@ def make_axis_options():
                 xyz_grid.AxisOption("[Semantic Guidance] Active", str, sega_apply_override('sega_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                 xyz_grid.AxisOption("[Semantic Guidance] Prompt", str, sega_apply_field("sega_prompt")),
                 xyz_grid.AxisOption("[Semantic Guidance] Negative Prompt", str, sega_apply_field("sega_neg_prompt")),
-                xyz_grid.AxisOption("[Semantic Guidance] Warmup Steps", int, sega_apply_field("sega_warmup")),
                 xyz_grid.AxisOption("[Semantic Guidance] Guidance Scale", float, sega_apply_field("sega_edit_guidance_scale")),
                 xyz_grid.AxisOption("[Semantic Guidance] Tail Percentage Threshold", float, sega_apply_field("sega_tail_percentage_threshold")),
-                xyz_grid.AxisOption("[Semantic Guidance] Momentum Scale", float, sega_apply_field("sega_momentum_scale")),
-                xyz_grid.AxisOption("[Semantic Guidance] Momentum Beta", float, sega_apply_field("sega_momentum_beta")),
+                xyz_grid.AxisOption("[AAA] Window Size", int, sega_apply_field("sega_warmup")),
+                xyz_grid.AxisOption("[AAA] Correction Threshold", float, sega_apply_field("sega_momentum_scale")),
+                xyz_grid.AxisOption("[AAA] Correction Strength", float, sega_apply_field("sega_momentum_beta")),
         }
         if not any("[Semantic Guidance]" in x.label for x in xyz_grid.axis_options):
                 xyz_grid.axis_options.extend(extra_axis_options)
