@@ -193,12 +193,99 @@ class SegaExtensionScript(scripts.Script):
                 logger.debug('Unhooked callbacks')
                 script_callbacks.remove_current_script_callbacks()
 
+        def correction_by_similarities(f, C, tau, gamma, alpha):
+                """
+                Apply the Correction by Similarities algorithm on embeddings.
+
+                Args:
+                f (Tensor): The embedding tensor of shape (n, d).
+                C (list): Indices of selected tokens.
+                tau (float): Score threshold.
+                gamma (int): Window size for the windowing function.
+                alpha (float): Correction strength.
+
+                Returns:
+                Tensor: The corrected embedding tensor.
+                """
+
+                n, d = f.shape
+                f_tilde = f.detach().clone()  # Copy the embedding tensor
+
+                # Define a windowing function
+                def psi(c, gamma, n):
+                        window = torch.zeros(n)
+                        start = max(0, c - gamma)
+                        end = min(n, c + gamma + 1)
+                        window[start:end] = 1
+                        return window
+
+                for c in C:
+                        Sc = f[c] * f  # Element-wise multiplication
+                        Sc_tilde = Sc * (Sc > tau)  # Apply threshold and filter
+                        Sc_tilde /= Sc_tilde.max()  # Normalize
+                        window = psi(c, gamma, n).unsqueeze(1)  # Apply windowing function
+                        Sc_tilde *= window
+                        f_c_tilde = torch.sum(Sc_tilde * f, dim=0)  # Combine embeddings
+                        f_tilde[c] = (1 - alpha) * f[c] + alpha * f_c_tilde  # Blend embeddings
+
+                return f_tilde
+
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, concept_conds, sega_params: list[SegaStateParams]):
                 # TODO: add option to opt out of batching for performance
                 sampling_step = params.sampling_step
                 text_cond = params.text_cond
                 text_uncond = params.text_uncond
 
+                # correction by similarities
+                text_cond_shape = text_cond.shape
+                text_uncond_shape = text_cond.shape
+
+                score_threshold = 0.5
+                correction_strength = 0.5
+                window_size = 10
+
+                # [batch_size, tokens(77, 154, etc.), 2048]
+                for batch_idx, batch in enumerate(text_cond):
+                        # we want to select a token here, for nwo we do it on everything
+                        selected_token_idx = 0
+
+                        window_start_idx = max(0, selected_token_idx - window_size)
+                        window_end_idx = min(len(batch)-1, selected_token_idx + window_size)
+
+                        f = batch.detach().clone() # original embedding
+                        f_bar = batch.detach().clone() # corrected embedding, copy original batch
+
+                        # slice tokens within window
+                        window = batch[window_start_idx:window_end_idx]
+
+                        for token_index, embedding in enumerate(batch):
+                                actual_token_idx = token_index + window_start_idx
+                                
+                                # line 4
+                                s_c = embedding * f
+
+                                # line 5 threshold and normalize
+                                mask = s_c < score_threshold
+                                s_c[mask] /= torch.max(s_c)
+
+                                # line 6 windowing is done before this
+                                s_c *= s_c
+
+                                # line 7
+                                f_c = f_bar[actual_token_idx]
+                                n = len(batch)
+                                sum_fc = n * (s_c * f) # sum of s_c * f from 1 to n
+                                f_bar[actual_token_idx] = sum_fc[actual_token_idx]
+
+                                # line 8
+                                f_bar[actual_token_idx] = (1 - correction_strength) * f_c[actual_token_idx] + correction_strength * sum_fc[actual_token_idx]
+
+                params.text_cond[batch_idx] = f_bar
+
+
+
+
+                return
                 # pad text_cond or text_uncond to match the length of the longest prompt
                 # i would prefer to let sd_samplers_cfg_denoiser.py handle the padding, but
                 # there isn't a callback that returns the padded conds
