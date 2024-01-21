@@ -4,7 +4,10 @@ import modules.scripts as scripts
 import gradio as gr
 import scipy.stats as stats
 
-from modules import script_callbacks, prompt_parser
+from modules import script_callbacks, prompt_parser, sd_hijack, sd_hijack_optimizations
+from modules.hypernetworks import hypernetwork
+#import modules.sd_hijack_optimizations
+from ldm.util import default
 from modules.script_callbacks import CFGDenoiserParams
 from modules.prompt_parser import reconstruct_multicond_batch
 from modules.processing import StableDiffusionProcessing
@@ -12,7 +15,10 @@ from modules.processing import StableDiffusionProcessing
 from modules.sd_samplers_cfg_denoiser import pad_cond
 from modules import shared
 
+import math
 import torch
+from torch import nn
+from torch.nn import functional as F
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -180,6 +186,8 @@ class SegaExtensionScript(scripts.Script):
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, concept_conds, concepts_sega_params)
 
+                self.ready_hijack_forward(sega_params)
+
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(y)
                 script_callbacks.on_script_unloaded(self.unhook_callbacks)
@@ -219,10 +227,19 @@ class SegaExtensionScript(scripts.Script):
                         end = min(n, c + gamma + 1)
                         window[start:end] = 1
                         return window
+                
+
 
                 for token_idx, c in enumerate(C):
                         Sc = f[c] * f  # Element-wise multiplication
-                        tau = torch.quantile(Sc, percentile)
+                        # product = greater positive value indicates more similarity
+                        # filter out values under score threshold from 0 to max
+                        Sc_flat_positive = Sc[Sc > 0]
+                        k = 10
+                        e= 2.718281
+                        # 0.000001 < pct < 0.999999999
+                        pct = min(0.999999999, max(0.000001, 1 - e**(-k * percentile))) 
+                        tau = torch.quantile(Sc_flat_positive, pct)
                         Sc_tilde = Sc * (Sc > tau)  # Apply threshold and filter
                         Sc_tilde /= Sc_tilde.max()  # Normalize
                         window = psi(c, gamma, n, Sc_tilde.dtype, Sc_tilde.device).unsqueeze(1)  # Apply windowing function
@@ -231,6 +248,30 @@ class SegaExtensionScript(scripts.Script):
                         f_tilde[c] = (1 - alpha) * f[c] + alpha * f_c_tilde  # Blend embeddings
 
                 return f_tilde
+        
+        def ready_hijack_forward(self, sega_params: list[SegaStateParams]):
+                m = shared.sd_model
+                nlm = m.network_layer_mapping
+
+                #def hijack_forward(*args, context=None, sega_params=sega_params):
+                cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
+                for module in cross_attn_modules:
+                        def hook_forward(module, input, output):
+                                p = sega_params
+                        #def hijack_forward(*args, **kwargs):
+                        #        out = module.forward(*args, **kwargs)
+                        #        return out
+                        handle = module.register_forward_hook(hook_forward)
+                        #forward = module.forward
+
+                # current_optimization = sd_hijack.current_optimizer
+                # ldm_forward = sd_hijack_optimizations.ldm.modules.attention.CrossAttention.forward
+                # sgm_forward = sd_hijack_optimizations.sgm.modules.attention.CrossAttention.forward
+                # sd_hijack_optimizations.ldm.modules.attention.CrossAttention.forward = hijack_forward
+                # sd_hijack_optimizations.sgm.modules.attention.CrossAttention.forward = hijack_forward
+        
+
+        
 
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, concept_conds, sega_params: list[SegaStateParams]):
                 # TODO: add option to opt out of batching for performance
@@ -257,10 +298,11 @@ class SegaExtensionScript(scripts.Script):
 
                 # [batch_size, tokens(77, 154, etc.), 2048]
                 for batch_idx, batch in enumerate(text_cond):
-                        selected_token_idx = 0
-                        window_start_idx = max(0, selected_token_idx - window_size)
-                        window_end_idx = min(len(batch)-1, selected_token_idx + window_size)
-                        window = list(range(window_start_idx, window_end_idx))
+                        #selected_token_idx = 0
+                        #window_start_idx = max(0, selected_token_idx - window_size)
+                        #window_end_idx = min(len(batch)-1, selected_token_idx + window_size)
+                        #window = list(range(window_start_idx, window_end_idx))
+                        window = list(range(0, len(batch)))
 
                         f_bar = self.correction_by_similarities(batch, window, score_threshold, window_size, correction_strength)
 
@@ -445,6 +487,28 @@ class SegaExtensionScript(scripts.Script):
                                 # update velocity
                                 sega_param.v[key] = v_t_1
 
+
+class GaussianSmoothing(nn.Module):
+    def __init__(self, channels, kernel_size, sigma):
+        super(GaussianSmoothing, self).__init__()
+        # Create a x, y coordinate grid of shape (kernel_size, kernel_size, 2)
+        self.kernel_size = kernel_size
+        self.sigma = sigma
+        self.channels = channels
+        # This is the standard deviation of the normal distribution
+
+        # Create a 1D Gaussian kernel
+        kernel = 1 / (sigma * math.sqrt(2 * math.pi)) * torch.exp(-torch.pow(torch.arange(kernel_size) - kernel_size // 2, 2) / (2 * sigma ** 2))
+        kernel = kernel / kernel.sum()
+
+        # Apply the kernel to each channel
+        self.weight = nn.Parameter(kernel.view(1, 1, kernel_size).repeat(channels, 1, 1))
+
+    def forward(self, x):
+        # Apply 1D Gaussian smoothing
+        return F.conv1d(x, self.weight, padding=self.kernel_size // 2)
+
+
 # XYZ Plot
 # Based on @mcmonkey4eva's XYZ Plot implementation here: https://github.com/mcmonkeyprojects/sd-dynamic-thresholding/blob/master/scripts/dynamic_thresholding.py
 def sega_apply_override(field, boolean: bool = False):
@@ -484,3 +548,45 @@ def callback_before_ui():
                 logger.exception("Semantic Guidance: Error while making axis options")
 
 script_callbacks.on_before_ui(callback_before_ui)
+
+# Based on Diffusers usage of scaled dot product attention from https://github.com/huggingface/diffusers/blob/c7da8fd23359a22d0df2741688b5b4f33c26df21/src/diffusers/models/cross_attention.py
+# The scaled_dot_product_attention_forward function contains parts of code under Apache-2.0 license listed under Scaled Dot Product Attention in the Licenses section of the web UI interface
+def scaled_dot_product_attention_forward_override(self, x, context=None, mask=None, sega_params=None, **kwargs):
+        batch_size, sequence_length, inner_dim = x.shape
+
+        if mask is not None:
+                mask = self.prepare_attention_mask(mask, sequence_length, batch_size)
+                mask = mask.view(batch_size, self.heads, -1, mask.shape[-1])
+
+        h = self.heads
+        q_in = self.to_q(x)
+        context = default(context, x)
+
+        context_k, context_v = hypernetwork.apply_hypernetworks(shared.loaded_hypernetworks, context)
+        k_in = self.to_k(context_k)
+        v_in = self.to_v(context_v)
+
+        head_dim = inner_dim // h
+        q = q_in.view(batch_size, -1, h, head_dim).transpose(1, 2)
+        k = k_in.view(batch_size, -1, h, head_dim).transpose(1, 2)
+        v = v_in.view(batch_size, -1, h, head_dim).transpose(1, 2)
+
+        del q_in, k_in, v_in
+
+        dtype = q.dtype
+        if shared.opts.upcast_attn:
+                q, k, v = q.float(), k.float(), v.float()
+
+        # the output of sdp = (batch, num_heads, seq_len, head_dim)
+        hidden_states = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False
+        )
+
+        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, h * head_dim)
+        hidden_states = hidden_states.to(dtype)
+
+        # linear proj
+        hidden_states = self.to_out[0](hidden_states)
+        # dropout
+        hidden_states = self.to_out[1](hidden_states)
+        return hidden_states
