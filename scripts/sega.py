@@ -56,6 +56,7 @@ class SegaStateParams:
 class SegaExtensionScript(scripts.Script):
         def __init__(self):
                 self.cached_c = [None, None]
+                self.handles = []
 
         # Extension title in menu UI
         def title(self):
@@ -76,7 +77,7 @@ class SegaExtensionScript(scripts.Script):
                         with gr.Row():
                                 warmup = gr.Slider(value = 10, minimum = 0, maximum = 30, step = 1, label="Window Size", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 10")
                                 edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 20.0, step = 0.01, label="Correction Strength", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
-                                tail_percentage_threshold = gr.Slider(value = 0.05, minimum = 0.0, maximum = 1.0, step = 0.01, label="Tail Percentage Threshold", elem_id = 'sega_tail_percentage_threshold', info="The percentage of latents to modify, default 0.05")
+                                tail_percentage_threshold = gr.Slider(value = 0.05, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for CTNMS", elem_id = 'sega_tail_percentage_threshold', info="The percentage of latents to modify, default 0.05")
                                 momentum_scale = gr.Slider(value = 0.3, minimum = 0.0, maximum = 1.0, step = 0.01, label="Correction Threshold", elem_id = 'sega_momentum_scale', info="Scale of momentum, default 0.3")
                                 momentum_beta = gr.Slider(value = 0.6, minimum = 0.0, maximum = 0.999, step = 0.01, label="Correction Strength", elem_id = 'sega_momentum_beta', info="Beta for momentum, default 0.6")
                 active.do_not_save_to_config = True
@@ -186,6 +187,7 @@ class SegaExtensionScript(scripts.Script):
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, concept_conds, concepts_sega_params)
+                un = lambda params: self.unhook_callbacks()
 
                 self.ready_hijack_forward(sega_params)
 
@@ -201,6 +203,13 @@ class SegaExtensionScript(scripts.Script):
 
         def unhook_callbacks(self):
                 logger.debug('Unhooked callbacks')
+
+                num_handles = len(self.handles)
+                for handle in self.handles:
+                        # TODO: add unhook
+                        handle.remove()
+                        self.handles.remove(handle)
+                print(f"Removed {num_handles} handles")
                 script_callbacks.remove_current_script_callbacks()
 
         def correction_by_similarities(self, f, C, percentile, gamma, alpha):
@@ -217,6 +226,8 @@ class SegaExtensionScript(scripts.Script):
                 Returns:
                 Tensor: The corrected embedding tensor.
                 """
+                if alpha == 0:
+                        return f
 
                 n, d = f.shape
                 f_tilde = f.detach().clone()  # Copy the embedding tensor
@@ -255,8 +266,49 @@ class SegaExtensionScript(scripts.Script):
                 nlm = m.network_layer_mapping
                 cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
 
+                def cross_token_non_maximum_suppression(module, input, output):
+                        alpha = sega_params.tail_percentage_threshold
+
+                        batch_size, sequence_length, inner_dim = output.shape
+                        h = module.heads
+                        head_dim = inner_dim // h
+                        dtype = output.dtype
+                        device = output.device
+
+                        # Reshape the attention map to separate heads
+                        attention_map = output.view(batch_size, sequence_length, h, head_dim)
+
+                        # Select token indices (Assuming this is provided as sega_params or similar)
+                        selected_tokens = torch.tensor(list(range(head_dim)))  # Example: Replace with actual indices
+
+                        # Extract and process the selected attention maps
+                        gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
+                        AC = attention_map[:, :, :, selected_tokens]  # Extracting relevant attention maps
+                        AC = gaussian_blur(AC)  # Applying Gaussian smoothing
+
+                        # Find the maximum contributing token for each pixel
+                        M = torch.argmax(AC, dim=-1)
+
+                        # Create one-hot vectors for suppression
+                        t = attention_map.size(-1)
+                        one_hot_M = F.one_hot(M, num_classes=t).to(dtype=dtype, device=device)
+
+                        # Apply the suppression mask
+                        #suppressed_attention_map = one_hot_M.unsqueeze(2) * attention_map
+                        suppressed_attention_map = one_hot_M * attention_map
+
+                        # Reshape back to original dimensions
+                        suppressed_attention_map = suppressed_attention_map.view(batch_size, sequence_length, inner_dim)
+
+                        out_tensor = (1-alpha) * output + alpha * suppressed_attention_map
+
+                        return out_tensor
+
                 for module in cross_attn_modules:
-                        handle = module.register_forward_hook(cross_token_non_maximum_suppression)
+                        # TODO: add unhook
+                        if len(module._forward_hooks) == 0:
+                                handle = module.register_forward_hook(cross_token_non_maximum_suppression)
+                                self.handles.append(handle)
 
 
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, concept_conds, sega_params: list[SegaStateParams]):
@@ -543,36 +595,39 @@ def gaussian_smoothing(attention_maps, kernel_size=3, sigma=1):
     padding = kernel_size // 2
     return F.conv2d(attention_maps, kernel, padding=padding, groups=channels)
 
-def cross_token_non_maximum_suppression(module, input, output):
-        batch_size, sequence_length, inner_dim = output.shape
-        h = module.heads
-        head_dim = inner_dim // h
-        dtype = output.dtype
-        device = output.device
+# def cross_token_non_maximum_suppression(module, input, output):
+        # batch_size, sequence_length, inner_dim = output.shape
+        # h = module.heads
+        # head_dim = inner_dim // h
+        # dtype = output.dtype
+        # device = output.device
 
-        # Reshape the attention map to separate heads
-        attention_map = output.view(batch_size, sequence_length, h, head_dim)
+        # # Reshape the attention map to separate heads
+        # attention_map = output.view(batch_size, sequence_length, h, head_dim)
 
-        # Select token indices (Assuming this is provided as sega_params or similar)
-        selected_tokens = torch.tensor([0, 1, 2])  # Example: Replace with actual indices
+        # # Select token indices (Assuming this is provided as sega_params or similar)
+        # selected_tokens = torch.tensor(list(range(head_dim)))  # Example: Replace with actual indices
 
-        # Extract and process the selected attention maps
-        gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
-        AC = attention_map[:, :, :, selected_tokens]  # Extracting relevant attention maps
-        AC = gaussian_blur(AC)  # Applying Gaussian smoothing
+        # # Extract and process the selected attention maps
+        # gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
+        # AC = attention_map[:, :, :, selected_tokens]  # Extracting relevant attention maps
+        # AC = gaussian_blur(AC)  # Applying Gaussian smoothing
 
-        # Find the maximum contributing token for each pixel
-        M = torch.argmax(AC, dim=-1)
+        # # Find the maximum contributing token for each pixel
+        # M = torch.argmax(AC, dim=-1)
 
-        # Create one-hot vectors for suppression
-        t = attention_map.size(-1)
-        one_hot_M = F.one_hot(M, num_classes=t).to(dtype=dtype, device=device)
+        # # Create one-hot vectors for suppression
+        # t = attention_map.size(-1)
+        # one_hot_M = F.one_hot(M, num_classes=t).to(dtype=dtype, device=device)
 
-        # Apply the suppression mask
-        #suppressed_attention_map = one_hot_M.unsqueeze(2) * attention_map
-        suppressed_attention_map = one_hot_M * attention_map
+        # # Apply the suppression mask
+        # #suppressed_attention_map = one_hot_M.unsqueeze(2) * attention_map
+        # suppressed_attention_map = one_hot_M * attention_map
 
-        # Reshape back to original dimensions
-        suppressed_attention_map = suppressed_attention_map.view(batch_size, sequence_length, inner_dim)
+        # # Reshape back to original dimensions
+        # suppressed_attention_map = suppressed_attention_map.view(batch_size, sequence_length, inner_dim)
 
-        return suppressed_attention_map
+        # alpha = 0.1
+        # out_tensor = (1-alpha) * output + alpha * suppressed_attention_map
+
+        # return out_tensor
