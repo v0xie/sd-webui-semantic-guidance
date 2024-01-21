@@ -52,6 +52,7 @@ class SegaStateParams:
                 self.momentum_scale: float = 0.3 # [0., 1.]
                 self.momentum_beta: float = 0.6 # [0., 1.) # larger bm is less volatile changes in momentum
                 self.strength = 1.0
+                self.dims = []
 
 class SegaExtensionScript(scripts.Script):
         def __init__(self):
@@ -153,7 +154,7 @@ class SegaExtensionScript(scripts.Script):
                         c = p.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, [self.cached_c], p.extra_network_data)
                         concept_conds.append([c, strength])
 
-                self.create_hook(p, active, concept_conds, None, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta)
+                self.create_hook(p, active, concept_conds, None, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, p.width, p.height)
 
         def parse_concept_prompt(self, prompt:str) -> list[str]:
                 """
@@ -171,7 +172,7 @@ class SegaExtensionScript(scripts.Script):
                         return []
                 return [x.strip() for x in prompt.split(",")]
 
-        def create_hook(self, p, active, concept_conds, concept_conds_neg, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
+        def create_hook(self, p, active, concept_conds, concept_conds_neg, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, width, height, *args, **kwargs):
                 # Create a list of parameters for each concept
                 concepts_sega_params = []
 
@@ -183,13 +184,14 @@ class SegaExtensionScript(scripts.Script):
                 sega_params.momentum_scale = momentum_scale
                 sega_params.momentum_beta = momentum_beta
                 sega_params.strength = 1.0
+                sega_params.dims = [width, height]
                 concepts_sega_params.append(sega_params)
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, concept_conds, concepts_sega_params)
                 un = lambda params: self.unhook_callbacks()
 
-                self.ready_hijack_forward(sega_params)
+                self.ready_hijack_forward(sega_params, tail_percentage_threshold, width, height)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(y)
@@ -261,25 +263,30 @@ class SegaExtensionScript(scripts.Script):
 
                 return f_tilde
         
-        def ready_hijack_forward(self, sega_params: list[SegaStateParams]):
+        def ready_hijack_forward(self, sega_params, alpha, width, height):
                 m = shared.sd_model
                 nlm = m.network_layer_mapping
                 cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
 
                 def cross_token_non_maximum_suppression(module, input, output):
-                        alpha = sega_params.tail_percentage_threshold
-
                         batch_size, sequence_length, inner_dim = output.shape
+
+                        max_dims = width*height
+                        factor = math.isqrt(max_dims // sequence_length) # should be a square of 2
+                        downscale_width = width // factor
+                        downscale_height = height // factor
+
                         h = module.heads
                         head_dim = inner_dim // h
                         dtype = output.dtype
                         device = output.device
 
-                        # Reshape the attention map to separate heads
-                        attention_map = output.view(batch_size, sequence_length, h, head_dim)
+                        # Reshape the attention map to batch_size, height, width
+                        attention_map = output.view(batch_size, downscale_height, downscale_width, inner_dim)
+                        #attention_map = output.view(batch_size, sequence_length, h, head_dim)
 
                         # Select token indices (Assuming this is provided as sega_params or similar)
-                        selected_tokens = torch.tensor(list(range(head_dim)))  # Example: Replace with actual indices
+                        selected_tokens = torch.tensor(list(range(inner_dim)))  # Example: Replace with actual indices
 
                         # Extract and process the selected attention maps
                         gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
