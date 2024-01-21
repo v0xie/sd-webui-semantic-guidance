@@ -37,6 +37,17 @@ An unofficial implementation of SEGA: Instructing Text-to-Image Models using Sem
       primaryClass={cs.CV}
 }
 
+and Multi-Concept T2I-Zero: Tweaking Only The Text Embeddings and Nothing Else
+
+@misc{tunanyan2023multiconcept,
+      title={Multi-Concept T2I-Zero: Tweaking Only The Text Embeddings and Nothing Else}, 
+      author={Hazarapet Tunanyan and Dejia Xu and Shant Navasardyan and Zhangyang Wang and Humphrey Shi},
+      year={2023},
+      eprint={2310.07419},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+
 Author: v0xie
 GitHub URL: https://github.com/v0xie/sd-webui-semantic-guidance
 
