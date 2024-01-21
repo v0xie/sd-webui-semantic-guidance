@@ -19,6 +19,7 @@ import math
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torchvision.transforms import GaussianBlur
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -252,26 +253,11 @@ class SegaExtensionScript(scripts.Script):
         def ready_hijack_forward(self, sega_params: list[SegaStateParams]):
                 m = shared.sd_model
                 nlm = m.network_layer_mapping
-
-                #def hijack_forward(*args, context=None, sega_params=sega_params):
                 cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
+
                 for module in cross_attn_modules:
-                        def hook_forward(module, input, output):
-                                p = sega_params
-                        #def hijack_forward(*args, **kwargs):
-                        #        out = module.forward(*args, **kwargs)
-                        #        return out
-                        handle = module.register_forward_hook(hook_forward)
-                        #forward = module.forward
+                        handle = module.register_forward_hook(cross_token_non_maximum_suppression)
 
-                # current_optimization = sd_hijack.current_optimizer
-                # ldm_forward = sd_hijack_optimizations.ldm.modules.attention.CrossAttention.forward
-                # sgm_forward = sd_hijack_optimizations.sgm.modules.attention.CrossAttention.forward
-                # sd_hijack_optimizations.ldm.modules.attention.CrossAttention.forward = hijack_forward
-                # sd_hijack_optimizations.sgm.modules.attention.CrossAttention.forward = hijack_forward
-        
-
-        
 
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, concept_conds, sega_params: list[SegaStateParams]):
                 # TODO: add option to opt out of batching for performance
@@ -549,44 +535,44 @@ def callback_before_ui():
 
 script_callbacks.on_before_ui(callback_before_ui)
 
-# Based on Diffusers usage of scaled dot product attention from https://github.com/huggingface/diffusers/blob/c7da8fd23359a22d0df2741688b5b4f33c26df21/src/diffusers/models/cross_attention.py
-# The scaled_dot_product_attention_forward function contains parts of code under Apache-2.0 license listed under Scaled Dot Product Attention in the Licenses section of the web UI interface
-def scaled_dot_product_attention_forward_override(self, x, context=None, mask=None, sega_params=None, **kwargs):
-        batch_size, sequence_length, inner_dim = x.shape
+def gaussian_smoothing(attention_maps, kernel_size=3, sigma=1):
+    # Apply Gaussian smoothing
+    channels = attention_maps.size(1)
+    kernel = torch.tensor([[[[1, 2, 1], [2, 4, 2], [1, 2, 1]]]]) / 16.0
+    kernel = kernel.repeat(channels, 1, 1, 1)
+    padding = kernel_size // 2
+    return F.conv2d(attention_maps, kernel, padding=padding, groups=channels)
 
-        if mask is not None:
-                mask = self.prepare_attention_mask(mask, sequence_length, batch_size)
-                mask = mask.view(batch_size, self.heads, -1, mask.shape[-1])
-
-        h = self.heads
-        q_in = self.to_q(x)
-        context = default(context, x)
-
-        context_k, context_v = hypernetwork.apply_hypernetworks(shared.loaded_hypernetworks, context)
-        k_in = self.to_k(context_k)
-        v_in = self.to_v(context_v)
-
+def cross_token_non_maximum_suppression(module, input, output):
+        batch_size, sequence_length, inner_dim = output.shape
+        h = module.heads
         head_dim = inner_dim // h
-        q = q_in.view(batch_size, -1, h, head_dim).transpose(1, 2)
-        k = k_in.view(batch_size, -1, h, head_dim).transpose(1, 2)
-        v = v_in.view(batch_size, -1, h, head_dim).transpose(1, 2)
+        dtype = output.dtype
+        device = output.device
 
-        del q_in, k_in, v_in
+        # Reshape the attention map to separate heads
+        attention_map = output.view(batch_size, sequence_length, h, head_dim)
 
-        dtype = q.dtype
-        if shared.opts.upcast_attn:
-                q, k, v = q.float(), k.float(), v.float()
+        # Select token indices (Assuming this is provided as sega_params or similar)
+        selected_tokens = torch.tensor([0, 1, 2])  # Example: Replace with actual indices
 
-        # the output of sdp = (batch, num_heads, seq_len, head_dim)
-        hidden_states = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False
-        )
+        # Extract and process the selected attention maps
+        gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
+        AC = attention_map[:, :, :, selected_tokens]  # Extracting relevant attention maps
+        AC = gaussian_blur(AC)  # Applying Gaussian smoothing
 
-        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, h * head_dim)
-        hidden_states = hidden_states.to(dtype)
+        # Find the maximum contributing token for each pixel
+        M = torch.argmax(AC, dim=-1)
 
-        # linear proj
-        hidden_states = self.to_out[0](hidden_states)
-        # dropout
-        hidden_states = self.to_out[1](hidden_states)
-        return hidden_states
+        # Create one-hot vectors for suppression
+        t = attention_map.size(-1)
+        one_hot_M = F.one_hot(M, num_classes=t).to(dtype=dtype, device=device)
+
+        # Apply the suppression mask
+        #suppressed_attention_map = one_hot_M.unsqueeze(2) * attention_map
+        suppressed_attention_map = one_hot_M * attention_map
+
+        # Reshape back to original dimensions
+        suppressed_attention_map = suppressed_attention_map.view(batch_size, sequence_length, inner_dim)
+
+        return suppressed_attention_map
