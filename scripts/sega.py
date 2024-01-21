@@ -191,7 +191,9 @@ class SegaExtensionScript(scripts.Script):
                 y = lambda params: self.on_cfg_denoiser_callback(params, concept_conds, concepts_sega_params)
                 un = lambda params: self.unhook_callbacks()
 
-                self.ready_hijack_forward(sega_params, tail_percentage_threshold, width, height)
+                # Hook callbacks
+                if tail_percentage_threshold > 0:
+                        self.ready_hijack_forward(sega_params, tail_percentage_threshold, width, height)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(y)
