@@ -336,9 +336,12 @@ class SegaExtensionScript(scripts.Script):
                         selected_tokens = torch.tensor(list(range(inner_dim)))  # Example: Replace with actual indices
 
                         # Extract and process the selected attention maps
+                        # GaussianBlur expects the input [..., C, H, W]
                         gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
                         AC = attention_map[:, :, :, selected_tokens]  # Extracting relevant attention maps
+                        AC = AC.permute(0, 3, 1, 2)
                         AC = gaussian_blur(AC)  # Applying Gaussian smoothing
+                        AC = AC.permute(0, 2, 3, 1)
 
                         # Find the maximum contributing token for each pixel
                         M = torch.argmax(AC, dim=-1)
