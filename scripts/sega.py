@@ -16,6 +16,7 @@ from modules.sd_samplers_cfg_denoiser import pad_cond
 from modules import shared
 
 import math
+from einops import rearrange
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -53,6 +54,8 @@ GitHub URL: https://github.com/v0xie/sd-webui-semantic-guidance
 
 """
 
+handles = []
+
 class SegaStateParams:
         def __init__(self):
                 self.concept_name = ''
@@ -63,6 +66,8 @@ class SegaStateParams:
                 self.momentum_scale: float = 0.3 # [0., 1.]
                 self.momentum_beta: float = 0.6 # [0., 1.) # larger bm is less volatile changes in momentum
                 self.strength = 1.0
+                self.width = None
+                self.height = None
                 self.dims = []
 
 class SegaExtensionScript(scripts.Script):
@@ -195,6 +200,8 @@ class SegaExtensionScript(scripts.Script):
                 sega_params.momentum_scale = momentum_scale
                 sega_params.momentum_beta = momentum_beta
                 sega_params.strength = 1.0
+                sega_params.width = width
+                sega_params.height = height 
                 sega_params.dims = [width, height]
                 concepts_sega_params.append(sega_params)
 
@@ -211,20 +218,17 @@ class SegaExtensionScript(scripts.Script):
                 script_callbacks.on_script_unloaded(self.unhook_callbacks)
 
         def postprocess_batch(self, p, active, neg_text, *args, **kwargs):
+                self.unhook_callbacks()
                 active = getattr(p, "sega_active", active)
                 if active is False:
                         return
-                self.unhook_callbacks()
 
         def unhook_callbacks(self):
+                global handles
                 logger.debug('Unhooked callbacks')
-
-                num_handles = len(self.handles)
-                for handle in self.handles:
-                        # TODO: add unhook
-                        handle.remove()
-                        self.handles.remove(handle)
-                print(f"Removed {num_handles} handles")
+                cross_attn_modules = self.get_cross_attn_modules()
+                for module in cross_attn_modules:
+                        _remove_all_forward_hooks(module, 'cross_token_non_maximum_suppression')
                 script_callbacks.remove_current_script_callbacks()
 
         def correction_by_similarities(self, f, C, percentile, gamma, alpha):
@@ -275,19 +279,48 @@ class SegaExtensionScript(scripts.Script):
                         f_tilde[c] = (1 - alpha) * f[c] + alpha * f_c_tilde  # Blend embeddings
 
                 return f_tilde
+
+        def find_image_dimensions(sequence_length, expected_aspect_ratio=1.0):
+                """
+                Find a pair of factors of the sequence_length that closely match the expected aspect ratio.
+
+                :param sequence_length: Total number of patches (sequence length).
+                :param expected_aspect_ratio: Expected aspect ratio (width / height) of the image.
+                :return: Tuple (height, width) representing the dimensions of the image, (0, 0) if invalid.
+                """
+                factors = []
+                for i in range(1, int(math.sqrt(sequence_length)) + 1):
+                        if sequence_length % i == 0:
+                                factors.append((i, sequence_length // i))
+
+                # Find the pair of factors that best matches the expected aspect ratio
+                closest_match = min(factors, key=lambda x: abs((x[1] / x[0]) - expected_aspect_ratio))
+                return closest_match if closest_match[1] / closest_match[0] == expected_aspect_ratio else None
+
         
         def ready_hijack_forward(self, sega_params, alpha, width, height):
-                m = shared.sd_model
-                nlm = m.network_layer_mapping
-                cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
+                global handles
+                cross_attn_modules = self.get_cross_attn_modules()
 
-                def cross_token_non_maximum_suppression(module, input, output):
+                # def pre_hook(module, args, kwargs):
+                #         if len(args) > 2:
+                #                 pass
+                #         pass
+                idx = len(handles)
+                def cross_token_non_maximum_suppression(module, input, kwargs, output):
+                        context = kwargs.get('context', None)
+                        if context is None:
+                                return
                         batch_size, sequence_length, inner_dim = output.shape
+                        #print(f"\nBatch size: {batch_size}, sequence length: {sequence_length}, inner dim: {inner_dim}\n")
 
                         max_dims = width*height
                         factor = math.isqrt(max_dims // sequence_length) # should be a square of 2
                         downscale_width = width // factor
                         downscale_height = height // factor
+                        if downscale_width * downscale_height != sequence_length:
+                                print(f"Error: Width: {width}, height: {height}, Downscale width: {downscale_width}, height: {downscale_height}, Factor: {factor}, Max dims: {max_dims}\n")
+                                return
 
                         h = module.heads
                         head_dim = inner_dim // h
@@ -295,8 +328,9 @@ class SegaExtensionScript(scripts.Script):
                         device = output.device
 
                         # Reshape the attention map to batch_size, height, width
+                        # FIXME: need to assert the height/width divides into the sequence length
                         attention_map = output.view(batch_size, downscale_height, downscale_width, inner_dim)
-                        #attention_map = output.view(batch_size, sequence_length, h, head_dim)
+                        # attention_map = output.view(batch_size, downscale_height, downscale_width, h, head_dim)
 
                         # Select token indices (Assuming this is provided as sega_params or similar)
                         selected_tokens = torch.tensor(list(range(inner_dim)))  # Example: Replace with actual indices
@@ -322,13 +356,25 @@ class SegaExtensionScript(scripts.Script):
 
                         out_tensor = (1-alpha) * output + alpha * suppressed_attention_map
 
+                        # remove handle
+                        #handles[idx].remove()
+
                         return out_tensor
 
                 for module in cross_attn_modules:
                         # TODO: add unhook
-                        if len(module._forward_hooks) == 0:
-                                handle = module.register_forward_hook(cross_token_non_maximum_suppression)
-                                self.handles.append(handle)
+                        #if len(module._forward_hooks) == 0:
+                               # pre_handle = module.register_forward_pre_hook(pre_hook, with_kwargs=True)
+                               # self.handles.append(pre_handle)
+                        handle = module.register_forward_hook(cross_token_non_maximum_suppression, with_kwargs=True)
+
+        def get_cross_attn_modules(self):
+            m = shared.sd_model
+            nlm = m.network_layer_mapping
+            cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
+            return cross_attn_modules
+                        #handles.append(handle)
+                        #self.handles.append(handle)
 
 
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, concept_conds, sega_params: list[SegaStateParams]):
@@ -353,6 +399,12 @@ class SegaExtensionScript(scripts.Script):
                 window_size = sp.warmup_period
                 correction_strength = sp.momentum_beta
                 score_threshold = sp.momentum_scale
+                width = sp.width
+                height = sp.height
+                tail_percentage_threshold = sp.tail_percentage_threshold
+
+#                if tail_percentage_threshold > 0:
+#                        self.ready_hijack_forward(sp, tail_percentage_threshold, width, height)
 
                 # [batch_size, tokens(77, 154, etc.), 2048]
                 for batch_idx, batch in enumerate(text_cond):
@@ -651,3 +703,61 @@ def gaussian_smoothing(attention_maps, kernel_size=3, sigma=1):
         # out_tensor = (1-alpha) * output + alpha * suppressed_attention_map
 
         # return out_tensor
+
+from warnings import warn
+from typing import Callable, Dict, Optional
+from collections import OrderedDict
+import torch
+
+
+# removing hooks DOESN'T WORK
+# https://github.com/pytorch/pytorch/issues/70455
+def _remove_all_forward_hooks(
+    module: torch.nn.Module, hook_fn_name: Optional[str] = None
+) -> None:
+    """
+    This function removes all forward hooks in the specified module, without requiring
+    any hook handles. This lets us clean up & remove any hooks that weren't property
+    deleted.
+
+    Warning: Various PyTorch modules and systems make use of hooks, and thus extreme
+    caution should be exercised when removing all hooks. Users are recommended to give
+    their hook function a unique name that can be used to safely identify and remove
+    the target forward hooks.
+
+    Args:
+
+        module (nn.Module): The module instance to remove forward hooks from.
+        hook_fn_name (str, optional): Optionally only remove specific forward hooks
+            based on their function's __name__ attribute.
+            Default: None
+    """
+
+    if hook_fn_name is None:
+        warn("Removing all active hooks can break some PyTorch modules & systems.")
+
+
+    def _remove_hooks(m: torch.nn.Module, name: Optional[str] = None) -> None:
+        if hasattr(module, "_forward_hooks"):
+            if m._forward_hooks != OrderedDict():
+                if name is not None:
+                    dict_items = list(m._forward_hooks.items())
+                    m._forward_hooks = OrderedDict(
+                        [(i, fn) for i, fn in dict_items if fn.__name__ != name]
+                    )
+                else:
+                    m._forward_hooks: Dict[int, Callable] = OrderedDict()
+
+    def _remove_child_hooks(
+        target_module: torch.nn.Module, hook_name: Optional[str] = None
+    ) -> None:
+        for name, child in target_module._modules.items():
+            if child is not None:
+                _remove_hooks(child, hook_name)
+                _remove_child_hooks(child, hook_name)
+
+    # Remove hooks from target submodules
+    _remove_child_hooks(module, hook_fn_name)
+
+    # Remove hooks from the target module
+    _remove_hooks(module, hook_fn_name)
